@@ -1,6 +1,5 @@
 import os
 import sys
-import tempfile
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -23,17 +22,19 @@ def conf_base(tmp_path):
 
 @pytest.fixture
 def app_client(conf_d, conf_base, tmp_path):
-    ssl_dir = tmp_path / 'conf.d' / 'ssl'
-    ssl_dir.mkdir(parents=True, exist_ok=True)
-    (ssl_dir / '_1com.conf').write_text(
-        'ssl_certificate /etc/nginx/certs/live/1.com/fullchain.pem;\n'
-        'ssl_certificate_key /etc/nginx/certs/live/1.com/privkey.pem;\n'
-    )
+    # Cert for the test domain app.1.com
+    cert_dir = tmp_path / 'certs' / 'live' / 'app.1.com'
+    cert_dir.mkdir(parents=True)
+    (cert_dir / 'fullchain.pem').write_text('# fake cert\n')
+    (cert_dir / 'privkey.pem').write_text('# fake key\n')
+
+    os.makedirs(conf_d, exist_ok=True)
     flask_app = create_app({
         'ANGINX_API_KEY': 'testkey',
         'ANGINX_MAX_SERVICES': 100,
         'CONF_D': conf_d,
         'CONF_BASE': conf_base,
+        'CERTS_DIR': str(tmp_path / 'certs'),
         'NGINX_PID': str(tmp_path / 'nginx.pid'),
         'TESTING': True,
     })

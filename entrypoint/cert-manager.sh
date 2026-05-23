@@ -1,15 +1,13 @@
 #!/bin/sh
 # Supervised daemon: acquires certs for ANGINX_DOMAINS via certbot webroot,
-# writes SSL fragments to conf.d/ssl/, reloads nginx, then renews every 12h.
+# then renews every 12h. SSL directives are embedded inline in each service's
+# nginx server block by app.py — no SSL fragment files needed here.
 
 set -e
 
 CERTS_DIR="/etc/nginx/certs"
-CONF_SSL="/etc/nginx/conf.d/ssl"
 ACME_WEBROOT="/var/www/acme"
 RENEW_INTERVAL=43200  # 12 hours
-
-mkdir -p "$CONF_SSL"
 
 # Wait for nginx to be running
 echo "[cert-manager] waiting for nginx..."
@@ -23,20 +21,6 @@ until [ -f /run/nginx.pid ] && kill -0 "$(cat /run/nginx.pid)" 2>/dev/null; do
     sleep 1
 done
 echo "[cert-manager] nginx ready (pid=$(cat /run/nginx.pid))"
-
-write_frag() {
-    local domain="$1"
-    local live_dir="${CERTS_DIR}/live/${domain}"
-    local slug
-    slug=$(echo "$domain" | tr -d '.')
-    cat > "${CONF_SSL}/_${slug}.conf" <<EOF
-ssl_certificate ${live_dir}/fullchain.pem;
-ssl_certificate_key ${live_dir}/privkey.pem;
-ssl_protocols TLSv1.2 TLSv1.3;
-ssl_ciphers HIGH:!aNULL:!MD5;
-EOF
-    echo "[cert-manager] SSL fragment written for ${domain}"
-}
 
 acquire() {
     local domain="$1"
@@ -68,8 +52,6 @@ acquire() {
 }
 
 # Initial acquisition for each domain in ANGINX_DOMAINS (comma-separated)
-RELOAD_NEEDED=0
-
 if [ -n "${ANGINX_DOMAINS:-}" ]; then
     old_IFS="$IFS"
     IFS=','
@@ -77,21 +59,14 @@ if [ -n "${ANGINX_DOMAINS:-}" ]; then
         IFS="$old_IFS"
         domain=$(echo "$domain" | tr -d ' ')
         [ -z "$domain" ] && continue
-        if acquire "$domain"; then
-            write_frag "$domain"
-            RELOAD_NEEDED=1
-        fi
+        acquire "$domain" || true
         IFS=','
     done
     IFS="$old_IFS"
 fi
 
-if [ "$RELOAD_NEEDED" -eq 1 ]; then
-    echo "[cert-manager] reloading nginx..."
-    nginx -s reload
-fi
-
-# Renewal loop — certbot renews certs with < 30 days remaining
+# Renewal loop — certbot renews certs with < 30 days remaining.
+# nginx -s reload picks up renewed certs without dropping connections.
 while true; do
     sleep "$RENEW_INTERVAL"
     echo "[cert-manager] running certbot renew..."

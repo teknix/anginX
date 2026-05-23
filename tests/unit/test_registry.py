@@ -4,12 +4,13 @@ import pytest
 from unittest.mock import patch
 
 
-def make_ssl(conf_d, slug='1com'):
-    ssl_dir = os.path.join(conf_d, 'ssl')
-    os.makedirs(ssl_dir, exist_ok=True)
-    with open(os.path.join(ssl_dir, f'_{slug}.conf'), 'w') as f:
-        f.write('ssl_certificate /etc/nginx/certs/live/1.com/fullchain.pem;\n')
-        f.write('ssl_certificate_key /etc/nginx/certs/live/1.com/privkey.pem;\n')
+def make_cert(certs_dir, domain='app.1.com'):
+    live_dir = os.path.join(certs_dir, 'live', domain)
+    os.makedirs(live_dir, exist_ok=True)
+    with open(os.path.join(live_dir, 'fullchain.pem'), 'w') as f:
+        f.write('# fake cert\n')
+    with open(os.path.join(live_dir, 'privkey.pem'), 'w') as f:
+        f.write('# fake key\n')
 
 
 def make_app(tmp_path):
@@ -18,16 +19,19 @@ def make_app(tmp_path):
     from app import create_app
     conf_d    = str(tmp_path / 'conf.d')
     conf_base = str(tmp_path / 'conf.base')
+    certs_dir = str(tmp_path / 'certs')
     os.makedirs(conf_d)
     os.makedirs(conf_base, exist_ok=True)
     with open(os.path.join(conf_base, '_proxy.conf'), 'w') as f:
         f.write('# proxy\n')
-    make_ssl(conf_d)
+    for domain in ['app.1.com', 'a.1.com', 'b.1.com', 'c.1.com', 'd.1.com']:
+        make_cert(certs_dir, domain)
     app = create_app({
         'ANGINX_API_KEY': 'secret',
         'ANGINX_MAX_SERVICES': 3,
         'CONF_D': conf_d,
         'CONF_BASE': conf_base,
+        'CERTS_DIR': certs_dir,
         'NGINX_PID': str(tmp_path / 'nginx.pid'),
         'TESTING': True,
     })
@@ -59,12 +63,12 @@ class TestRegister:
                             content_type='application/json')
         assert r.status_code == 400
 
-    def test_rejects_unknown_root_domain(self, tmp_path):
+    def test_rejects_missing_cert(self, tmp_path):
         client, app, _ = make_app(tmp_path)
         with patch('subprocess.run'):
-            r = post_register(client, domain='app.unknown.net')
-        assert r.status_code == 400
-        assert 'unknown root domain' in r.get_json()['error']
+            r = post_register(client, domain='app.nocert.net')
+        assert r.status_code == 503
+        assert 'no certificate' in r.get_json()['error']
 
     def test_success_updates_registry(self, tmp_path):
         client, app, _ = make_app(tmp_path)

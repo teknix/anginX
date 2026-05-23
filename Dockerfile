@@ -19,7 +19,6 @@ COPY templates/ templates/
 
 RUN mkdir -p \
     /etc/nginx/conf.d \
-    /etc/nginx/conf.d/ssl \
     /etc/nginx/certs \
     /var/www/acme/.well-known/acme-challenge \
     /var/lib/certbot \

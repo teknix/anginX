@@ -114,6 +114,7 @@ def create_app(config=None):
     app.config['ANGINX_MAX_SERVICES'] = int(os.environ.get('ANGINX_MAX_SERVICES', '100'))
     app.config['CONF_D']              = os.environ.get('CONF_D', '/etc/nginx/conf.d')
     app.config['CONF_BASE']           = os.environ.get('CONF_BASE', '/etc/nginx/conf.base')
+    app.config['CERTS_DIR']           = os.environ.get('CERTS_DIR', '/etc/nginx/certs')
     app.config['NGINX_PID']           = os.environ.get('NGINX_PID', '/run/nginx.pid')
 
     if config:
@@ -148,12 +149,10 @@ def create_app(config=None):
         name   = name.lower()
         host   = host.lower() if host else name  # default upstream = container name
 
-        _, slug = extract_root_domain(domain)
-        # SSL fragments live in conf.d/ssl/ — subdirectory excluded from http-level glob
-        ssl_include = f"{app.config['CONF_D']}/ssl/_{slug}.conf"
-
-        if not os.path.exists(ssl_include):
-            return jsonify({'error': f"unknown root domain: no SSL config at {ssl_include}"}), 400
+        cert_dir  = os.path.join(app.config['CERTS_DIR'], 'live', domain)
+        cert_file = os.path.join(cert_dir, 'fullchain.pem')
+        if not os.path.exists(cert_file):
+            return jsonify({'error': f"no certificate for {domain} — cert-manager may still be acquiring it"}), 503
 
         registry = app.config['_registry']
         if domain not in registry and len(registry) >= app.config['ANGINX_MAX_SERVICES']:
@@ -171,7 +170,10 @@ def create_app(config=None):
             f"server {{\n"
             f"    listen 443 ssl;\n"
             f"    server_name {domain};\n"
-            f"    include {ssl_include};\n"
+            f"    ssl_certificate {cert_dir}/fullchain.pem;\n"
+            f"    ssl_certificate_key {cert_dir}/privkey.pem;\n"
+            f"    ssl_protocols TLSv1.2 TLSv1.3;\n"
+            f"    ssl_ciphers HIGH:!aNULL:!MD5;\n"
             f"    include {app.config['CONF_BASE']}/_proxy.conf;\n"
             f"    resolver 127.0.0.11 valid=10s;\n"
             f"    location / {{\n"
