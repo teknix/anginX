@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>anginX dashboard</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: monospace; background: #0f0f0f; color: #d0d0d0; padding: 2rem; }
+  h1 { color: #e0e0e0; font-size: 1.2rem; margin-bottom: 1.5rem; letter-spacing: 0.05em; }
+  h1 span { color: #6af; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th { text-align: left; color: #888; border-bottom: 1px solid #333; padding: 0.4rem 0.8rem; }
+  td { padding: 0.5rem 0.8rem; border-bottom: 1px solid #1e1e1e; }
+  tr:hover td { background: #1a1a1a; }
+  a { color: #6af; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .empty { color: #555; padding: 2rem 0; text-align: center; }
+</style>
+</head>
+<body>
+<h1>angin<span>X</span></h1>
+{% if services %}
+<table>
+  <thead>
+    <tr>
+      <th>domain</th>
+      <th>container</th>
+      <th>port</th>
+      <th>registered</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in services %}
+    <tr>
+      <td><a href="https://{{ s.domain }}" target="_blank" rel="noopener">{{ s.domain }}</a></td>
+      <td>{{ s.name }}</td>
+      <td>{{ s.port }}</td>
+      <td>{{ s.registered_at }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No services registered. POST /new/&lt;key&gt; to add one.</p>
+{% endif %}
+</body>
+</html>

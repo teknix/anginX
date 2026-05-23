@@ -1,0 +1,37 @@
+services:
+  anginx:
+    build: .
+    container_name: anginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      ANGINX_API_KEY: "${ANGINX_API_KEY}"
+      ANGINX_SSL_MODE: "${ANGINX_SSL_MODE:-baked}"
+      ANGINX_MAX_SERVICES: "${ANGINX_MAX_SERVICES:-100}"
+    volumes:
+      - anginx_conf_d:/etc/nginx/conf.d
+      - /path/to/certs:/etc/nginx/certs:ro
+    networks:
+      - app_network
+
+  # Example upstream service — replace with your own
+  myapp:
+    image: your-flask-app:latest
+    container_name: myapp
+    environment:
+      ANGINX_URL: "http://anginx"
+      ANGINX_KEY: "${ANGINX_API_KEY}"
+    networks:
+      - app_network
+    depends_on:
+      anginx:
+        condition: service_healthy
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  anginx_conf_d:
