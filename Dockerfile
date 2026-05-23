@@ -1,7 +1,7 @@
 FROM nginx:1.27-alpine
 
-RUN apk add --no-cache python3 py3-pip supervisor curl certbot && \
-    pip3 install --no-cache-dir --break-system-packages flask gunicorn
+RUN apk add --no-cache python3 py3-pip supervisor curl && \
+    pip3 install --no-cache-dir --break-system-packages flask gunicorn certbot
 
 WORKDIR /app
 
