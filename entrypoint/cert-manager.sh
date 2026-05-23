@@ -1,7 +1,8 @@
 #!/bin/sh
-# Supervised daemon: acquires certs for ANGINX_DOMAINS via certbot webroot,
-# then renews every 12h. SSL directives are embedded inline in each service's
-# nginx server block by app.py — no SSL fragment files needed here.
+# Supervised daemon: acquires certs for ANGINX_DOMAINS via certbot HTTP-01
+# webroot challenge, then renews every 12h.
+# Cloudflare proxy (orange cloud) passes /.well-known/acme-challenge/ through
+# to the origin — no API token or special config needed.
 
 set -e
 
