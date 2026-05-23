@@ -164,9 +164,26 @@ def create_app(config=None):
 
         registered_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
+        upstream = f"http://{host}:{port_int}"
+        proxy_block = (
+            f"    include {app.config['CONF_BASE']}/_proxy.conf;\n"
+            f"    resolver 127.0.0.11 valid=10s;\n"
+            f"    location / {{\n"
+            f"        set $upstream {upstream};\n"
+            f"        proxy_pass $upstream;\n"
+            f"    }}\n"
+        )
         content = (
             f"# anginx: domain={domain} port={port_int} name={name} host={host}"
             f" registered_at={registered_at}\n"
+            f"server {{\n"
+            f"    listen 80;\n"
+            f"    server_name {domain};\n"
+            f"    location /.well-known/acme-challenge/ {{\n"
+            f"        root /var/www/acme;\n"
+            f"    }}\n"
+            f"{proxy_block}"
+            f"}}\n"
             f"server {{\n"
             f"    listen 443 ssl;\n"
             f"    server_name {domain};\n"
@@ -174,12 +191,7 @@ def create_app(config=None):
             f"    ssl_certificate_key {cert_dir}/privkey.pem;\n"
             f"    ssl_protocols TLSv1.2 TLSv1.3;\n"
             f"    ssl_ciphers HIGH:!aNULL:!MD5;\n"
-            f"    include {app.config['CONF_BASE']}/_proxy.conf;\n"
-            f"    resolver 127.0.0.11 valid=10s;\n"
-            f"    location / {{\n"
-            f"        set $upstream http://{host}:{port_int};\n"
-            f"        proxy_pass $upstream;\n"
-            f"    }}\n"
+            f"{proxy_block}"
             f"}}\n"
         )
 
