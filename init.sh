@@ -111,71 +111,87 @@ case "$SSL_CHOICE" in
 esac
 ok "SSL mode: $ANGINX_SSL_MODE"
 
-# ── Cert directory / domain setup ─────────────────────────────────────────────
+# ── Cert setup — always copies into ./certs/ (mounted as the container volume) ─
+
+# ./certs/<domain>/fullchain.pem + privkey.pem
+# docker-compose.yml mounts ./certs → /etc/nginx/certs inside the container
+mkdir -p certs
+
+copy_cert_pair() {
+    local domain="$1" fc="$2" pk="$3"
+    mkdir -p "certs/${domain}"
+    # resolve symlinks so the copy works even for Let's Encrypt live/ links
+    cp -L "$fc" "certs/${domain}/fullchain.pem"
+    cp -L "$pk" "certs/${domain}/privkey.pem"
+    chmod 600 "certs/${domain}/privkey.pem"
+    ok "certs/${domain}/ — copied"
+}
 
 if [ "$ANGINX_SSL_MODE" = "dynamic" ]; then
 
     echo ""
-    info "Dynamic mode: certs must be at <cert-dir>/<domain>/fullchain.pem + privkey.pem"
-    info "  e.g. /etc/letsencrypt/live/1.com/fullchain.pem"
+    info "Where are your existing certs? (e.g. /etc/letsencrypt/live)"
+    info "Each subdirectory must contain fullchain.pem and privkey.pem."
     echo ""
-    DEFAULT_CERTS="${CERTS_DIR:-/etc/nginx/certs}"
-    read -rp "$(echo -e "${CYAN}Cert directory${NC} [$DEFAULT_CERTS]: ")" INPUT_CERTS
-    CERTS_DIR="${INPUT_CERTS:-$DEFAULT_CERTS}"
-
-    [ -d "$CERTS_DIR" ] || die "Directory not found: $CERTS_DIR"
+    read -rp "$(echo -e "${CYAN}Source cert directory${NC}: ")" SRC_CERTS
+    [ -d "$SRC_CERTS" ] || die "Directory not found: $SRC_CERTS"
 
     FOUND_DOMAINS=()
     while IFS= read -r -d '' dir; do
         domain=$(basename "$dir")
-        if [ -f "$dir/fullchain.pem" ] && [ -f "$dir/privkey.pem" ]; then
+        fc="${dir}/fullchain.pem"
+        pk="${dir}/privkey.pem"
+        if [ -f "$fc" ] && [ -f "$pk" ]; then
+            copy_cert_pair "$domain" "$fc" "$pk"
             FOUND_DOMAINS+=("$domain")
         else
-            warn "Skipping $domain — missing fullchain.pem or privkey.pem"
+            warn "Skipping ${domain} — missing fullchain.pem or privkey.pem"
         fi
-    done < <(find "$CERTS_DIR" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+    done < <(find "$SRC_CERTS" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
 
-    if [ ${#FOUND_DOMAINS[@]} -eq 0 ]; then
-        die "No valid cert directories found in $CERTS_DIR"
-    fi
-    ok "Found certs for: ${FOUND_DOMAINS[*]}"
+    [ ${#FOUND_DOMAINS[@]} -eq 0 ] && die "No valid cert directories found in $SRC_CERTS"
+    ok "Certs ready for: ${FOUND_DOMAINS[*]}"
 
 else
 
-    # Baked mode: create _ssl_<slug>.conf fragments for each domain
+    # Baked mode: copy certs into ./certs/ AND create conf.base/_ssl_<slug>.conf fragments
     echo ""
-    info "Baked mode: enter root domains one at a time (e.g. 1.com), blank to finish"
+    info "Enter root domains one at a time (e.g. 1.com), blank to finish."
+    info "Certs will be copied into ./certs/<domain>/ and referenced at /etc/nginx/certs/<domain>/ inside the container."
+    echo ""
     BAKED_DOMAINS=()
     while true; do
         read -rp "$(echo -e "${CYAN}Domain${NC} (or blank to finish): ")" DOMAIN
         [ -z "$DOMAIN" ] && break
 
-        SLUG="${DOMAIN//.}"  # strip dots: 1.com → 1com
+        SLUG="${DOMAIN//.}"
 
         DEFAULT_FC="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
         DEFAULT_PK="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
 
-        read -rp "$(echo -e "${CYAN}  fullchain.pem path${NC} [$DEFAULT_FC]: ")" FC
+        read -rp "$(echo -e "${CYAN}  fullchain.pem${NC} [$DEFAULT_FC]: ")" FC
         FC="${FC:-$DEFAULT_FC}"
-        read -rp "$(echo -e "${CYAN}  privkey.pem   path${NC} [$DEFAULT_PK]: ")" PK
+        read -rp "$(echo -e "${CYAN}  privkey.pem  ${NC} [$DEFAULT_PK]: ")" PK
         PK="${PK:-$DEFAULT_PK}"
 
-        [ -f "$FC" ] || { warn "File not found: $FC"; continue; }
-        [ -f "$PK" ] || { warn "File not found: $PK"; continue; }
+        [ -f "$FC" ] || { warn "File not found: $FC — skipping $DOMAIN"; continue; }
+        [ -f "$PK" ] || { warn "File not found: $PK — skipping $DOMAIN"; continue; }
 
+        copy_cert_pair "$DOMAIN" "$FC" "$PK"
+
+        # Fragment references the in-container path, not the host path
         FRAG="conf.base/_ssl_${SLUG}.conf"
         cat > "$FRAG" <<SSLCONF
-ssl_certificate ${FC};
-ssl_certificate_key ${PK};
+ssl_certificate /etc/nginx/certs/${DOMAIN}/fullchain.pem;
+ssl_certificate_key /etc/nginx/certs/${DOMAIN}/privkey.pem;
 ssl_protocols TLSv1.2 TLSv1.3;
 ssl_ciphers HIGH:!aNULL:!MD5;
 SSLCONF
-        ok "Created $FRAG for ${DOMAIN}"
+        ok "conf.base/_ssl_${SLUG}.conf created"
         BAKED_DOMAINS+=("$DOMAIN")
     done
 
     [ ${#BAKED_DOMAINS[@]} -eq 0 ] && die "No domains configured"
-    CERTS_DIR="/etc/nginx/certs"
 
 fi
 
@@ -201,17 +217,8 @@ cat > "$ENV_FILE" <<ENV
 ANGINX_API_KEY=${ANGINX_API_KEY}
 ANGINX_SSL_MODE=${ANGINX_SSL_MODE}
 ANGINX_MAX_SERVICES=${ANGINX_MAX_SERVICES}
-CERTS_DIR=${CERTS_DIR}
 ENV
 ok "Wrote $ENV_FILE"
-
-# ── Patch docker-compose.yml cert volume mount ────────────────────────────────
-
-# Replace the placeholder cert path with the real one
-if grep -q '/path/to/certs' docker-compose.yml; then
-    sed -i "s|/path/to/certs|${CERTS_DIR}|g" docker-compose.yml
-    ok "Updated docker-compose.yml cert volume mount → ${CERTS_DIR}"
-fi
 
 # ── Build ─────────────────────────────────────────────────────────────────────
 
