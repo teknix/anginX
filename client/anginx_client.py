@@ -35,20 +35,22 @@ def _request(method, url, key=None, body=None, retries=3):
     raise last_err
 
 
-def register(url, key, domain, port, name, retries=3):
+def register(url, key, domain, port, name, host=None, retries=3):
     """
     Register a service with anginX.
 
     url    -- base URL of anginX, e.g. "http://anginx"
     key    -- ANGINX_API_KEY
     domain -- FQDN the service is reachable at, e.g. "app.1.com"
-    port   -- port the Docker container listens on
-    name   -- Docker container name (used for DNS + conf filename)
+    port   -- port the upstream listens on
+    name   -- label used in conf filename; also Docker DNS name if host omitted
+    host   -- upstream IP or hostname (omit for Docker containers on same network)
     """
     endpoint = f"{url.rstrip('/')}/new/{key}"
-    return _request('POST', endpoint, key=key,
-                    body={'domain': domain, 'port': port, 'name': name},
-                    retries=retries)
+    body = {'domain': domain, 'port': port, 'name': name}
+    if host is not None:
+        body['host'] = host
+    return _request('POST', endpoint, key=key, body=body, retries=retries)
 
 
 def deregister(url, key, domain, retries=3):
