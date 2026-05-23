@@ -265,4 +265,6 @@ server {
 }
 ```
 
+HTTP → HTTPS redirects and ACME challenge handling are in the `default_server` block in `nginx.conf` and apply to all domains automatically — no per-service port 80 block needed.
+
 The `# anginx:` header is the single source of truth — the in-memory registry is rebuilt from conf files on startup.
