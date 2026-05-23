@@ -14,9 +14,76 @@ echo ""
 
 # ── Prerequisites ──────────────────────────────────────────────────────────────
 
-command -v docker >/dev/null 2>&1 || die "docker is not installed"
-docker compose version >/dev/null 2>&1 || die "docker compose (v2) is not installed"
-ok "docker and docker compose found"
+install_docker() {
+    info "Docker not found — installing via get.docker.com..."
+
+    command -v curl >/dev/null 2>&1 || {
+        # install curl first
+        if command -v apt-get >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq curl
+        elif command -v yum >/dev/null 2>&1; then
+            sudo yum install -y -q curl
+        elif command -v dnf >/dev/null 2>&1; then
+            sudo dnf install -y -q curl
+        else
+            die "curl not found and no known package manager to install it"
+        fi
+    }
+
+    curl -fsSL https://get.docker.com | sudo sh
+    sudo systemctl enable --now docker
+
+    # Add current user to docker group so subsequent docker calls work without sudo
+    if ! groups "$USER" | grep -q docker; then
+        sudo usermod -aG docker "$USER"
+        warn "Added $USER to the docker group."
+        warn "For non-root docker access in new shells, log out and back in."
+        warn "Continuing this session via sudo..."
+        DOCKER_CMD="sudo docker"
+    fi
+
+    ok "Docker installed: $(docker --version 2>/dev/null || sudo docker --version)"
+}
+
+install_compose_plugin() {
+    info "Docker Compose v2 plugin not found — installing..."
+
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq docker-compose-plugin
+    elif command -v yum >/dev/null 2>&1; then
+        sudo yum install -y -q docker-compose-plugin
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y -q docker-compose-plugin
+    else
+        # Fallback: install standalone binary from GitHub releases
+        info "No apt/yum/dnf found — installing docker compose binary from GitHub..."
+        COMPOSE_VERSION=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest \
+            | grep '"tag_name"' | sed 's/.*"tag_name": *"\(.*\)".*/\1/')
+        COMPOSE_BIN="/usr/local/lib/docker/cli-plugins/docker-compose"
+        sudo mkdir -p "$(dirname "$COMPOSE_BIN")"
+        sudo curl -fsSL \
+            "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
+            -o "$COMPOSE_BIN"
+        sudo chmod +x "$COMPOSE_BIN"
+    fi
+
+    ok "Docker Compose installed: $(docker compose version)"
+}
+
+DOCKER_CMD="docker"
+
+if ! command -v docker >/dev/null 2>&1; then
+    install_docker
+else
+    ok "Docker: $(docker --version)"
+fi
+
+if ! ${DOCKER_CMD} compose version >/dev/null 2>&1; then
+    install_compose_plugin
+else
+    ok "Docker Compose: $(${DOCKER_CMD} compose version)"
+fi
 
 # ── Load existing .env if present ──────────────────────────────────────────────
 
@@ -159,13 +226,13 @@ fi
 
 echo ""
 info "Building Docker image..."
-docker compose build --quiet
+${DOCKER_CMD} compose build --quiet
 ok "Image built"
 
 # ── Start ─────────────────────────────────────────────────────────────────────
 
 info "Starting anginX..."
-docker compose up -d
+${DOCKER_CMD} compose up -d
 ok "Container started"
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -178,7 +245,7 @@ until curl -sf http://localhost/health >/dev/null 2>&1; do
     if [ "$ATTEMPTS" -ge 30 ]; then
         echo ""
         warn "Health check timed out after 15s. Check logs:"
-        echo "  docker compose logs anginx"
+        echo "  ${DOCKER_CMD} compose logs anginx"
         exit 1
     fi
     sleep 0.5
@@ -202,6 +269,6 @@ echo "      -d '{\"domain\":\"app.yourdomain.com\",\"port\":7705,\"name\":\"myap
 echo ""
 echo "  Dashboard: http://localhost/dashboard?key=${ANGINX_API_KEY}"
 echo "  Services:  http://localhost/services"
-echo "  Logs:      docker compose logs -f anginx"
+echo "  Logs:      ${DOCKER_CMD} compose logs -f anginx"
 echo "  ─────────────────────────────────────────────────"
 echo ""
