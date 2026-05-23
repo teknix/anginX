@@ -17,19 +17,6 @@ services:
     networks:
       - app_network
 
-  # Example upstream service — replace with your own
-  myapp:
-    image: your-flask-app:latest
-    container_name: myapp
-    environment:
-      ANGINX_URL: "http://anginx"
-      ANGINX_KEY: "${ANGINX_API_KEY}"
-    networks:
-      - app_network
-    depends_on:
-      anginx:
-        condition: service_healthy
-
 networks:
   app_network:
     driver: bridge
