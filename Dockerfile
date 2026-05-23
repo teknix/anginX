@@ -1,6 +1,6 @@
 FROM nginx:1.27-alpine
 
-RUN apk add --no-cache python3 py3-pip supervisor curl && \
+RUN apk add --no-cache python3 py3-pip supervisor curl certbot && \
     pip3 install --no-cache-dir --break-system-packages flask gunicorn
 
 WORKDIR /app
@@ -12,19 +12,23 @@ COPY nginx.conf /etc/nginx/nginx.conf
 COPY conf.base/  /etc/nginx/conf.base/
 COPY supervisord.conf /etc/supervisor/conf.d/anginx.conf
 COPY entrypoint/ entrypoint/
-RUN chmod +x entrypoint/start-gunicorn.sh
+RUN chmod +x entrypoint/*.sh
 
 COPY app.py .
 COPY templates/ templates/
 
-RUN mkdir -p /etc/nginx/conf.d /etc/nginx/conf.d/ssl /etc/nginx/certs /var/log/supervisor
-
-# conf.d is the named volume — generate an empty default so nginx starts cleanly
-RUN echo "# anginx managed conf.d" > /etc/nginx/conf.d/.keep
+RUN mkdir -p \
+    /etc/nginx/conf.d \
+    /etc/nginx/conf.d/ssl \
+    /etc/nginx/certs \
+    /var/www/acme/.well-known/acme-challenge \
+    /var/lib/certbot \
+    /var/log/certbot \
+    /var/log/supervisor
 
 EXPOSE 80 443
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=5 \
     CMD curl -sf http://localhost/health || exit 1
 
-CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/anginx.conf"]
+ENTRYPOINT ["/app/entrypoint/docker-entrypoint.sh"]

@@ -8,5 +8,3 @@ dist/
 *.egg-info/
 .env
 tests/integration/test-certs/
-certs/
-.cert-sources

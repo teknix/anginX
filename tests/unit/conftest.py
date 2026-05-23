@@ -23,18 +23,17 @@ def conf_base(tmp_path):
 
 @pytest.fixture
 def app_client(conf_d, conf_base, tmp_path):
-    os.makedirs(conf_d, exist_ok=True)
-    (tmp_path / 'conf.base' / '_ssl_1com.conf').write_text(
-        'ssl_certificate /certs/1.com/fullchain.pem;\n'
-        'ssl_certificate_key /certs/1.com/privkey.pem;\n'
+    ssl_dir = tmp_path / 'conf.d' / 'ssl'
+    ssl_dir.mkdir(parents=True, exist_ok=True)
+    (ssl_dir / '_1com.conf').write_text(
+        'ssl_certificate /etc/nginx/certs/live/1.com/fullchain.pem;\n'
+        'ssl_certificate_key /etc/nginx/certs/live/1.com/privkey.pem;\n'
     )
     flask_app = create_app({
         'ANGINX_API_KEY': 'testkey',
         'ANGINX_MAX_SERVICES': 100,
-        'ANGINX_SSL_MODE': 'baked',
         'CONF_D': conf_d,
         'CONF_BASE': conf_base,
-        'CERTS_DIR': str(tmp_path / 'certs'),
         'NGINX_PID': str(tmp_path / 'nginx.pid'),
         'TESTING': True,
     })

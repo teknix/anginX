@@ -4,13 +4,12 @@ import pytest
 from unittest.mock import patch
 
 
-def make_ssl(conf_base, slug='1com'):
-    os.makedirs(conf_base, exist_ok=True)
-    with open(os.path.join(conf_base, f'_ssl_{slug}.conf'), 'w') as f:
-        f.write('ssl_certificate /certs/fullchain.pem;\n')
-        f.write('ssl_certificate_key /certs/privkey.pem;\n')
-    with open(os.path.join(conf_base, '_proxy.conf'), 'w') as f:
-        f.write('# proxy\n')
+def make_ssl(conf_d, slug='1com'):
+    ssl_dir = os.path.join(conf_d, 'ssl')
+    os.makedirs(ssl_dir, exist_ok=True)
+    with open(os.path.join(ssl_dir, f'_{slug}.conf'), 'w') as f:
+        f.write('ssl_certificate /etc/nginx/certs/live/1.com/fullchain.pem;\n')
+        f.write('ssl_certificate_key /etc/nginx/certs/live/1.com/privkey.pem;\n')
 
 
 def make_app(tmp_path):
@@ -20,14 +19,15 @@ def make_app(tmp_path):
     conf_d    = str(tmp_path / 'conf.d')
     conf_base = str(tmp_path / 'conf.base')
     os.makedirs(conf_d)
-    make_ssl(conf_base)
+    os.makedirs(conf_base, exist_ok=True)
+    with open(os.path.join(conf_base, '_proxy.conf'), 'w') as f:
+        f.write('# proxy\n')
+    make_ssl(conf_d)
     app = create_app({
         'ANGINX_API_KEY': 'secret',
         'ANGINX_MAX_SERVICES': 3,
-        'ANGINX_SSL_MODE': 'baked',
         'CONF_D': conf_d,
         'CONF_BASE': conf_base,
-        'CERTS_DIR': str(tmp_path / 'certs'),
         'NGINX_PID': str(tmp_path / 'nginx.pid'),
         'TESTING': True,
     })

@@ -65,41 +65,6 @@ def check_nginx(conf):
         return False
 
 
-def initialize_dynamic_ssl(conf):
-    if conf.get('ANGINX_SSL_MODE', 'baked') != 'dynamic':
-        return
-    certs_dir = conf.get('CERTS_DIR', '/etc/nginx/certs')
-    conf_d = conf.get('CONF_D', '/etc/nginx/conf.d')
-    # SSL fragments go into conf.d/ssl/ — a subdirectory NOT touched by the
-    # nginx.conf http-level glob (include conf.d/*.conf doesn't recurse).
-    ssl_dir = os.path.join(conf_d, 'ssl')
-    if not os.path.isdir(certs_dir):
-        return
-    os.makedirs(ssl_dir, exist_ok=True)
-    for entry in sorted(os.listdir(certs_dir)):
-        entry_path = os.path.join(certs_dir, entry)
-        if not os.path.isdir(entry_path):
-            continue
-        fullchain = os.path.join(entry_path, 'fullchain.pem')
-        privkey   = os.path.join(entry_path, 'privkey.pem')
-        if not os.path.exists(fullchain) or not os.path.exists(privkey):
-            raise RuntimeError(
-                f"malformed cert directory '{entry}': "
-                f"missing fullchain.pem or privkey.pem in {entry_path}"
-            )
-        slug = entry.replace('.', '').lower()
-        ssl_conf = os.path.join(ssl_dir, f"_{slug}.conf")
-        try:
-            with open(ssl_conf, 'w') as f:
-                f.write(f"ssl_certificate {fullchain};\n")
-                f.write(f"ssl_certificate_key {privkey};\n")
-                f.write("ssl_protocols TLSv1.2 TLSv1.3;\n")
-                f.write("ssl_ciphers HIGH:!aNULL:!MD5;\n")
-        except PermissionError:
-            raise RuntimeError(f"conf.d/ssl/ not writable — cannot write {ssl_conf}")
-        except OSError as e:
-            raise RuntimeError(f"failed to write {ssl_conf}: {e}")
-
 
 def rebuild_registry(conf):
     conf_d = conf.get('CONF_D', '/etc/nginx/conf.d')
@@ -135,18 +100,15 @@ def rebuild_registry(conf):
 def create_app(config=None):
     app = Flask(__name__)
 
-    app.config['ANGINX_API_KEY']    = os.environ.get('ANGINX_API_KEY', '')
+    app.config['ANGINX_API_KEY']      = os.environ.get('ANGINX_API_KEY', '')
     app.config['ANGINX_MAX_SERVICES'] = int(os.environ.get('ANGINX_MAX_SERVICES', '100'))
-    app.config['ANGINX_SSL_MODE']   = os.environ.get('ANGINX_SSL_MODE', 'baked')
-    app.config['CONF_D']            = os.environ.get('CONF_D', '/etc/nginx/conf.d')
-    app.config['CONF_BASE']         = os.environ.get('CONF_BASE', '/etc/nginx/conf.base')
-    app.config['CERTS_DIR']         = os.environ.get('CERTS_DIR', '/etc/nginx/certs')
-    app.config['NGINX_PID']         = os.environ.get('NGINX_PID', '/run/nginx.pid')
+    app.config['CONF_D']              = os.environ.get('CONF_D', '/etc/nginx/conf.d')
+    app.config['CONF_BASE']           = os.environ.get('CONF_BASE', '/etc/nginx/conf.base')
+    app.config['NGINX_PID']           = os.environ.get('NGINX_PID', '/run/nginx.pid')
 
     if config:
         app.config.update(config)
 
-    initialize_dynamic_ssl(app.config)
     app.config['_registry'] = rebuild_registry(app.config)
 
     @app.route('/new/<key>', methods=['POST'])
@@ -173,12 +135,8 @@ def create_app(config=None):
         name   = name.lower()
 
         _, slug = extract_root_domain(domain)
-        ssl_mode = app.config['ANGINX_SSL_MODE']
-        if ssl_mode == 'baked':
-            ssl_include = f"{app.config['CONF_BASE']}/_ssl_{slug}.conf"
-        else:
-            # fragments live in conf.d/ssl/ — subdirectory excluded from http-level glob
-            ssl_include = f"{app.config['CONF_D']}/ssl/_{slug}.conf"
+        # SSL fragments live in conf.d/ssl/ — subdirectory excluded from http-level glob
+        ssl_include = f"{app.config['CONF_D']}/ssl/_{slug}.conf"
 
         if not os.path.exists(ssl_include):
             return jsonify({'error': f"unknown root domain: no SSL config at {ssl_include}"}), 400
