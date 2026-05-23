@@ -9,3 +9,4 @@ dist/
 .env
 tests/integration/test-certs/
 certs/
+.cert-sources

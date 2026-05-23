@@ -117,82 +117,162 @@ ok "SSL mode: $ANGINX_SSL_MODE"
 # docker-compose.yml mounts ./certs → /etc/nginx/certs inside the container
 mkdir -p certs
 
+# .cert-sources records where each domain's cert came from so renew-certs.sh
+# can re-copy after certbot renewal without user input
+CERT_SOURCES_FILE=".cert-sources"
+
 copy_cert_pair() {
     local domain="$1" fc="$2" pk="$3"
     mkdir -p "certs/${domain}"
-    # resolve symlinks so the copy works even for Let's Encrypt live/ links
     cp -L "$fc" "certs/${domain}/fullchain.pem"
     cp -L "$pk" "certs/${domain}/privkey.pem"
     chmod 600 "certs/${domain}/privkey.pem"
+    # record source so renew-certs.sh knows where to pull from
+    grep -v "^${domain}=" "$CERT_SOURCES_FILE" 2>/dev/null > "${CERT_SOURCES_FILE}.tmp" || true
+    echo "${domain}=$(dirname "$fc")" >> "${CERT_SOURCES_FILE}.tmp"
+    mv "${CERT_SOURCES_FILE}.tmp" "$CERT_SOURCES_FILE"
     ok "certs/${domain}/ — copied"
 }
 
-if [ "$ANGINX_SSL_MODE" = "dynamic" ]; then
+install_certbot() {
+    if command -v certbot >/dev/null 2>&1; then return; fi
+    info "certbot not found — installing..."
+    if command -v apt-get >/dev/null 2>&1; then
+        sudo apt-get update -qq && sudo apt-get install -y -qq certbot
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y -q certbot
+    elif command -v yum >/dev/null 2>&1; then
+        sudo yum install -y -q certbot
+    else
+        die "Cannot install certbot automatically — install it manually then re-run init.sh"
+    fi
+    ok "certbot installed"
+}
 
-    echo ""
-    info "Where are your existing certs? (e.g. /etc/letsencrypt/live)"
-    info "Each subdirectory must contain fullchain.pem and privkey.pem."
-    echo ""
-    read -rp "$(echo -e "${CYAN}Source cert directory${NC}: ")" SRC_CERTS
-    [ -d "$SRC_CERTS" ] || die "Directory not found: $SRC_CERTS"
+obtain_cert_standalone() {
+    local domain="$1" email="$2"
+    info "Obtaining cert for ${domain} via Let's Encrypt standalone..."
+    sudo certbot certonly \
+        --standalone \
+        --non-interactive \
+        --agree-tos \
+        --email "$email" \
+        -d "$domain" \
+        --expand
+    ok "Cert obtained for ${domain}"
+}
 
-    FOUND_DOMAINS=()
-    while IFS= read -r -d '' dir; do
-        domain=$(basename "$dir")
-        fc="${dir}/fullchain.pem"
-        pk="${dir}/privkey.pem"
-        if [ -f "$fc" ] && [ -f "$pk" ]; then
-            copy_cert_pair "$domain" "$fc" "$pk"
-            FOUND_DOMAINS+=("$domain")
-        else
-            warn "Skipping ${domain} — missing fullchain.pem or privkey.pem"
-        fi
-    done < <(find "$SRC_CERTS" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+# ── Per-mode cert acquisition ──────────────────────────────────────────────────
 
-    [ ${#FOUND_DOMAINS[@]} -eq 0 ] && die "No valid cert directories found in $SRC_CERTS"
-    ok "Certs ready for: ${FOUND_DOMAINS[*]}"
+collect_domains_and_certs() {
+    # shared loop used by both modes: prompts for domains, handles no-cert case
+    local mode="$1"   # "dynamic" or "baked"
+    COLLECTED_DOMAINS=()
 
-else
-
-    # Baked mode: copy certs into ./certs/ AND create conf.base/_ssl_<slug>.conf fragments
     echo ""
     info "Enter root domains one at a time (e.g. 1.com), blank to finish."
-    info "Certs will be copied into ./certs/<domain>/ and referenced at /etc/nginx/certs/<domain>/ inside the container."
     echo ""
-    BAKED_DOMAINS=()
+
     while true; do
         read -rp "$(echo -e "${CYAN}Domain${NC} (or blank to finish): ")" DOMAIN
         [ -z "$DOMAIN" ] && break
 
-        SLUG="${DOMAIN//.}"
+        FC="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+        PK="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
 
-        DEFAULT_FC="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
-        DEFAULT_PK="/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
+        # Check if cert already exists at the LE standard path
+        if [ -f "$FC" ] && [ -f "$PK" ]; then
+            copy_cert_pair "$DOMAIN" "$FC" "$PK"
+        else
+            echo ""
+            warn "No cert found for ${DOMAIN} at ${FC}"
+            echo "    [1] Obtain a new cert via Let's Encrypt (HTTP challenge — port 80 must be free)"
+            echo "    [2] Provide cert paths manually"
+            echo "    [3] Skip this domain"
+            read -rp "$(echo -e "${CYAN}  Choice${NC} [1/2/3]: ")" CERT_CHOICE
 
-        read -rp "$(echo -e "${CYAN}  fullchain.pem${NC} [$DEFAULT_FC]: ")" FC
-        FC="${FC:-$DEFAULT_FC}"
-        read -rp "$(echo -e "${CYAN}  privkey.pem  ${NC} [$DEFAULT_PK]: ")" PK
-        PK="${PK:-$DEFAULT_PK}"
+            case "${CERT_CHOICE:-1}" in
+                1)
+                    read -rp "$(echo -e "${CYAN}  Email for LE registration${NC}: ")" LE_EMAIL
+                    [ -z "$LE_EMAIL" ] && { warn "Email required — skipping ${DOMAIN}"; continue; }
+                    install_certbot
+                    obtain_cert_standalone "$DOMAIN" "$LE_EMAIL"
+                    copy_cert_pair "$DOMAIN" "$FC" "$PK"
+                    ;;
+                2)
+                    read -rp "$(echo -e "${CYAN}  fullchain.pem path${NC}: ")" MANUAL_FC
+                    read -rp "$(echo -e "${CYAN}  privkey.pem   path${NC}: ")" MANUAL_PK
+                    [ -f "$MANUAL_FC" ] || { warn "File not found: $MANUAL_FC — skipping ${DOMAIN}"; continue; }
+                    [ -f "$MANUAL_PK" ] || { warn "File not found: $MANUAL_PK — skipping ${DOMAIN}"; continue; }
+                    copy_cert_pair "$DOMAIN" "$MANUAL_FC" "$MANUAL_PK"
+                    ;;
+                3)
+                    warn "Skipping ${DOMAIN}"
+                    continue
+                    ;;
+                *)
+                    warn "Invalid choice — skipping ${DOMAIN}"
+                    continue
+                    ;;
+            esac
+        fi
 
-        [ -f "$FC" ] || { warn "File not found: $FC — skipping $DOMAIN"; continue; }
-        [ -f "$PK" ] || { warn "File not found: $PK — skipping $DOMAIN"; continue; }
-
-        copy_cert_pair "$DOMAIN" "$FC" "$PK"
-
-        # Fragment references the in-container path, not the host path
-        FRAG="conf.base/_ssl_${SLUG}.conf"
-        cat > "$FRAG" <<SSLCONF
+        if [ "$mode" = "baked" ]; then
+            SLUG="${DOMAIN//.}"
+            FRAG="conf.base/_ssl_${SLUG}.conf"
+            cat > "$FRAG" <<SSLCONF
 ssl_certificate /etc/nginx/certs/${DOMAIN}/fullchain.pem;
 ssl_certificate_key /etc/nginx/certs/${DOMAIN}/privkey.pem;
 ssl_protocols TLSv1.2 TLSv1.3;
 ssl_ciphers HIGH:!aNULL:!MD5;
 SSLCONF
-        ok "conf.base/_ssl_${SLUG}.conf created"
-        BAKED_DOMAINS+=("$DOMAIN")
+            ok "conf.base/_ssl_${SLUG}.conf created"
+        fi
+
+        COLLECTED_DOMAINS+=("$DOMAIN")
     done
 
-    [ ${#BAKED_DOMAINS[@]} -eq 0 ] && die "No domains configured"
+    [ ${#COLLECTED_DOMAINS[@]} -eq 0 ] && die "No domains configured"
+    ok "Certs ready for: ${COLLECTED_DOMAINS[*]}"
+}
 
+if [ "$ANGINX_SSL_MODE" = "dynamic" ]; then
+
+    echo ""
+    echo "  [1] I have existing certs — point me at the directory"
+    echo "  [2] Enter domains one by one (obtain or locate each)"
+    echo ""
+    read -rp "$(echo -e "${CYAN}Choose${NC} [1/2, default 1]: ")" CERT_SRC_CHOICE
+
+    if [ "${CERT_SRC_CHOICE:-1}" = "1" ]; then
+        echo ""
+        info "Source cert directory — each subdirectory must have fullchain.pem + privkey.pem"
+        info "(e.g. /etc/letsencrypt/live)"
+        echo ""
+        read -rp "$(echo -e "${CYAN}Source cert directory${NC}: ")" SRC_CERTS
+        [ -d "$SRC_CERTS" ] || die "Directory not found: $SRC_CERTS"
+
+        FOUND_DOMAINS=()
+        while IFS= read -r -d '' dir; do
+            domain=$(basename "$dir")
+            fc="${dir}/fullchain.pem"
+            pk="${dir}/privkey.pem"
+            if [ -f "$fc" ] && [ -f "$pk" ]; then
+                copy_cert_pair "$domain" "$fc" "$pk"
+                FOUND_DOMAINS+=("$domain")
+            else
+                warn "Skipping ${domain} — missing fullchain.pem or privkey.pem"
+            fi
+        done < <(find "$SRC_CERTS" -mindepth 1 -maxdepth 1 -type d -print0 | sort -z)
+
+        [ ${#FOUND_DOMAINS[@]} -eq 0 ] && die "No valid cert directories found in $SRC_CERTS"
+        ok "Certs ready for: ${FOUND_DOMAINS[*]}"
+    else
+        collect_domains_and_certs "dynamic"
+    fi
+
+else
+    collect_domains_and_certs "baked"
 fi
 
 # ── Max services cap ───────────────────────────────────────────────────────────
@@ -268,5 +348,8 @@ echo ""
 echo "  Dashboard: http://localhost/dashboard?key=${ANGINX_API_KEY}"
 echo "  Services:  http://localhost/services"
 echo "  Logs:      ${DOCKER_CMD} compose logs -f anginx"
+echo ""
+echo "  Cert renewal — add to cron:"
+echo "    0 3 * * * cd $(pwd) && ./renew-certs.sh >> /var/log/anginx-renew.log 2>&1"
 echo "  ─────────────────────────────────────────────────"
 echo ""
