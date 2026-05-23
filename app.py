@@ -7,11 +7,13 @@ from flask import Flask, request, jsonify, render_template
 
 DOMAIN_RE = re.compile(r'^[a-z0-9]([a-z0-9.-]{0,61}[a-z0-9])?$')
 NAME_RE   = re.compile(r'^[a-z0-9][a-z0-9_-]{0,62}$')
+# host: IPv4, LAN hostname, or Docker container name — dots/colons allowed, no shell-unsafe chars
+HOST_RE   = re.compile(r'^[a-z0-9][a-z0-9._:-]{0,252}$')
 PORT_RANGE = range(1, 65536)
 
 HEADER_RE = re.compile(
     r'^#\s*anginx:\s*domain=(?P<domain>\S+)\s+port=(?P<port>\d+)'
-    r'\s+name=(?P<name>\S+)\s+registered_at=(?P<registered_at>\S+)'
+    r'\s+name=(?P<name>\S+)(?:\s+host=(?P<host>\S+))?\s+registered_at=(?P<registered_at>\S+)'
 )
 
 
@@ -34,6 +36,13 @@ def validate_name(name):
         raise ValidationError("name is required")
     if not NAME_RE.match(name.lower()):
         raise ValidationError("invalid container name — lowercase letters, digits, hyphens, underscores only")
+
+
+def validate_host(host):
+    if not host:
+        raise ValidationError("host cannot be empty")
+    if not HOST_RE.match(host.lower()):
+        raise ValidationError("invalid host — use an IP address (192.168.1.5), hostname, or container name")
 
 
 def validate_port(port):
@@ -88,6 +97,7 @@ def rebuild_registry(conf):
                             'domain': domain,
                             'port': int(d['port']),
                             'name': d['name'],
+                            'host': d['host'] or d['name'],  # host absent in old conf files
                             'conf_file': filename,
                             'registered_at': d['registered_at'],
                         }
@@ -123,16 +133,20 @@ def create_app(config=None):
         domain = data.get('domain', '')
         name   = data.get('name', '')
         port   = data.get('port')
+        host   = data.get('host', '')  # optional — upstream IP or hostname; defaults to name
 
         try:
             validate_domain(domain)
             validate_name(name)
             port_int = validate_port(port)
+            if host:
+                validate_host(host)
         except ValidationError as e:
             return jsonify({'error': str(e)}), 400
 
         domain = domain.lower()
         name   = name.lower()
+        host   = host.lower() if host else name  # default upstream = container name
 
         _, slug = extract_root_domain(domain)
         # SSL fragments live in conf.d/ssl/ — subdirectory excluded from http-level glob
@@ -152,7 +166,7 @@ def create_app(config=None):
         registered_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
         content = (
-            f"# anginx: domain={domain} port={port_int} name={name}"
+            f"# anginx: domain={domain} port={port_int} name={name} host={host}"
             f" registered_at={registered_at}\n"
             f"server {{\n"
             f"    listen 443 ssl;\n"
@@ -161,7 +175,7 @@ def create_app(config=None):
             f"    include {app.config['CONF_BASE']}/_proxy.conf;\n"
             f"    resolver 127.0.0.11 valid=10s;\n"
             f"    location / {{\n"
-            f"        set $upstream http://{name}:{port_int};\n"
+            f"        set $upstream http://{host}:{port_int};\n"
             f"        proxy_pass $upstream;\n"
             f"    }}\n"
             f"}}\n"
@@ -223,6 +237,7 @@ def create_app(config=None):
             'domain': domain,
             'port': port_int,
             'name': name,
+            'host': host,
             'conf_file': conf_filename,
             'registered_at': registered_at,
         }
