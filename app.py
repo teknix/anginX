@@ -70,8 +70,12 @@ def initialize_dynamic_ssl(conf):
         return
     certs_dir = conf.get('CERTS_DIR', '/etc/nginx/certs')
     conf_d = conf.get('CONF_D', '/etc/nginx/conf.d')
+    # SSL fragments go into conf.d/ssl/ — a subdirectory NOT touched by the
+    # nginx.conf http-level glob (include conf.d/*.conf doesn't recurse).
+    ssl_dir = os.path.join(conf_d, 'ssl')
     if not os.path.isdir(certs_dir):
         return
+    os.makedirs(ssl_dir, exist_ok=True)
     for entry in sorted(os.listdir(certs_dir)):
         entry_path = os.path.join(certs_dir, entry)
         if not os.path.isdir(entry_path):
@@ -84,7 +88,7 @@ def initialize_dynamic_ssl(conf):
                 f"missing fullchain.pem or privkey.pem in {entry_path}"
             )
         slug = entry.replace('.', '').lower()
-        ssl_conf = os.path.join(conf_d, f"_ssl_{slug}.conf")
+        ssl_conf = os.path.join(ssl_dir, f"_{slug}.conf")
         try:
             with open(ssl_conf, 'w') as f:
                 f.write(f"ssl_certificate {fullchain};\n")
@@ -92,7 +96,7 @@ def initialize_dynamic_ssl(conf):
                 f.write("ssl_protocols TLSv1.2 TLSv1.3;\n")
                 f.write("ssl_ciphers HIGH:!aNULL:!MD5;\n")
         except PermissionError:
-            raise RuntimeError(f"conf.d not writable — cannot write {ssl_conf}")
+            raise RuntimeError(f"conf.d/ssl/ not writable — cannot write {ssl_conf}")
         except OSError as e:
             raise RuntimeError(f"failed to write {ssl_conf}: {e}")
 
@@ -173,7 +177,8 @@ def create_app(config=None):
         if ssl_mode == 'baked':
             ssl_include = f"{app.config['CONF_BASE']}/_ssl_{slug}.conf"
         else:
-            ssl_include = f"{app.config['CONF_D']}/_ssl_{slug}.conf"
+            # fragments live in conf.d/ssl/ — subdirectory excluded from http-level glob
+            ssl_include = f"{app.config['CONF_D']}/ssl/_{slug}.conf"
 
         if not os.path.exists(ssl_include):
             return jsonify({'error': f"unknown root domain: no SSL config at {ssl_include}"}), 400

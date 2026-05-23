@@ -17,7 +17,7 @@ RUN chmod +x entrypoint/start-gunicorn.sh
 COPY app.py .
 COPY templates/ templates/
 
-RUN mkdir -p /etc/nginx/conf.d /etc/nginx/certs /var/log/supervisor
+RUN mkdir -p /etc/nginx/conf.d /etc/nginx/conf.d/ssl /etc/nginx/certs /var/log/supervisor
 
 # conf.d is the named volume — generate an empty default so nginx starts cleanly
 RUN echo "# anginx managed conf.d" > /etc/nginx/conf.d/.keep

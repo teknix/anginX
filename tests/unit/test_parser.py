@@ -23,9 +23,11 @@ def test_parses_valid_header(tmp_path):
     assert reg['app.1.com']['registered_at'] == '2026-05-22T00:00:00Z'
 
 
-def test_skips_ssl_prefix_files(tmp_path):
+def test_does_not_recurse_into_ssl_subdir(tmp_path):
+    # dynamic SSL fragments live in conf.d/ssl/ — parser only reads conf.d/ direct children
     conf_d = str(tmp_path / 'conf.d')
-    write_conf(conf_d, '_ssl_1com.conf',
+    ssl_dir = str(tmp_path / 'conf.d' / 'ssl')
+    write_conf(ssl_dir, '_1com.conf',
                'ssl_certificate /etc/nginx/certs/1.com/fullchain.pem;\n')
     reg = rebuild_registry({'CONF_D': conf_d})
     assert len(reg) == 0
