@@ -46,29 +46,20 @@ install_docker() {
 }
 
 install_compose_plugin() {
-    info "Docker Compose v2 plugin not found — installing..."
+    info "Docker Compose v2 plugin not found — installing from GitHub releases..."
 
-    if command -v apt-get >/dev/null 2>&1; then
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq docker-compose-plugin
-    elif command -v yum >/dev/null 2>&1; then
-        sudo yum install -y -q docker-compose-plugin
-    elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y -q docker-compose-plugin
-    else
-        # Fallback: install standalone binary from GitHub releases
-        info "No apt/yum/dnf found — installing docker compose binary from GitHub..."
-        COMPOSE_VERSION=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest \
-            | grep '"tag_name"' | sed 's/.*"tag_name": *"\(.*\)".*/\1/')
-        COMPOSE_BIN="/usr/local/lib/docker/cli-plugins/docker-compose"
-        sudo mkdir -p "$(dirname "$COMPOSE_BIN")"
-        sudo curl -fsSL \
-            "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" \
-            -o "$COMPOSE_BIN"
-        sudo chmod +x "$COMPOSE_BIN"
-    fi
+    COMPOSE_VERSION=$(curl -fsSL https://api.github.com/repos/docker/compose/releases/latest \
+        | grep '"tag_name"' | sed 's/.*"tag_name": *"\(.*\)".*/\1/')
+    [ -z "$COMPOSE_VERSION" ] && die "Could not determine latest Docker Compose version"
 
-    ok "Docker Compose installed: $(docker compose version)"
+    COMPOSE_BIN="/usr/local/lib/docker/cli-plugins/docker-compose"
+    sudo mkdir -p "$(dirname "$COMPOSE_BIN")"
+    sudo curl -fsSL \
+        "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)" \
+        -o "$COMPOSE_BIN"
+    sudo chmod +x "$COMPOSE_BIN"
+
+    ok "Docker Compose installed: $(${DOCKER_CMD} compose version)"
 }
 
 DOCKER_CMD="docker"
