@@ -1,6 +1,6 @@
-FROM nginx:1.27-alpine
+FROM alpine:3.21
 
-RUN apk add --no-cache python3 py3-pip supervisor curl && \
+RUN apk add --no-cache nginx python3 py3-pip supervisor curl && \
     pip3 install --no-cache-dir --break-system-packages flask gunicorn certbot
 
 WORKDIR /app
