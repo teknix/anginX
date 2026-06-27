@@ -35,7 +35,7 @@ def _request(method, url, key=None, body=None, retries=3):
     raise last_err
 
 
-def register(url, key, domain, port, name, host=None, retries=3):
+def register(url, key, domain, port, name, host=None, sse=False, retries=3):
     """
     Register a service with anginX.
 
@@ -45,11 +45,14 @@ def register(url, key, domain, port, name, host=None, retries=3):
     port   -- port the upstream listens on
     name   -- label used in conf filename; also Docker DNS name if host omitted
     host   -- upstream IP or hostname (omit for Docker containers on same network)
+    sse    -- True for SSE / streaming endpoints (disables nginx proxy buffering)
     """
     endpoint = f"{url.rstrip('/')}/new/{key}"
     body = {'domain': domain, 'port': port, 'name': name}
     if host is not None:
         body['host'] = host
+    if sse:
+        body['sse'] = True
     return _request('POST', endpoint, key=key, body=body, retries=retries)
 
 

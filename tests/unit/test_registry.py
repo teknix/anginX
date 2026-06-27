@@ -84,6 +84,33 @@ class TestRegister:
         assert len(services) == 1
         assert services[0]['domain'] == 'app.1.com'
 
+    def test_sse_writes_directives_and_round_trips(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = client.post(
+                '/new/secret',
+                data=json.dumps({'domain': 'app.1.com', 'port': 8080,
+                                 'name': 'myapp', 'sse': True}),
+                content_type='application/json',
+            )
+        assert r.status_code == 200
+
+        conf = open(os.path.join(conf_d, 'myapp.app.1.com.conf')).read()
+        assert 'proxy_buffering off;' in conf
+        assert 'sse=1' in conf  # header marker
+
+        # registry is rebuilt from the conf header, so this proves the round-trip
+        assert client.get('/services').get_json()[0]['sse'] is True
+
+    def test_non_sse_has_no_directives(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        with patch('subprocess.run'):
+            post_register(client)
+        conf = open(os.path.join(conf_d, 'myapp.app.1.com.conf')).read()
+        assert 'proxy_buffering' not in conf
+        assert 'sse=' not in conf
+        assert client.get('/services').get_json()[0]['sse'] is False
+
     def test_idempotent_overwrite(self, tmp_path):
         client, app, _ = make_app(tmp_path)
         with patch('subprocess.run'):

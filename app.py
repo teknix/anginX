@@ -13,7 +13,8 @@ PORT_RANGE = range(1, 65536)
 
 HEADER_RE = re.compile(
     r'^#\s*anginx:\s*domain=(?P<domain>\S+)\s+port=(?P<port>\d+)'
-    r'\s+name=(?P<name>\S+)(?:\s+host=(?P<host>\S+))?\s+registered_at=(?P<registered_at>\S+)'
+    r'\s+name=(?P<name>\S+)(?:\s+host=(?P<host>\S+))?(?:\s+sse=(?P<sse>\d+))?'
+    r'\s+registered_at=(?P<registered_at>\S+)'
 )
 
 
@@ -98,6 +99,7 @@ def rebuild_registry(conf):
                             'port': int(d['port']),
                             'name': d['name'],
                             'host': d['host'] or d['name'],  # host absent in old conf files
+                            'sse': d['sse'] == '1',
                             'conf_file': filename,
                             'registered_at': d['registered_at'],
                         }
@@ -135,6 +137,7 @@ def create_app(config=None):
         name   = data.get('name', '')
         port   = data.get('port')
         host   = data.get('host', '')  # optional — upstream IP or hostname; defaults to name
+        sse    = bool(data.get('sse'))  # streaming endpoint — disable proxy buffering
 
         try:
             validate_domain(domain)
@@ -165,9 +168,17 @@ def create_app(config=None):
         registered_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
         upstream = f"http://{host}:{port_int}"
+        # SSE needs unbuffered, keep-alive HTTP/1.1 with a long read timeout
+        sse_directives = (
+            f"        proxy_buffering off;\n"
+            f"        proxy_cache off;\n"
+            f"        proxy_http_version 1.1;\n"
+            f"        proxy_set_header Connection '';\n"
+            f"        proxy_read_timeout 3600s;\n"
+        ) if sse else ""
         content = (
             f"# anginx: domain={domain} port={port_int} name={name} host={host}"
-            f" registered_at={registered_at}\n"
+            f"{' sse=1' if sse else ''} registered_at={registered_at}\n"
             f"server {{\n"
             f"    listen 443 ssl;\n"
             f"    server_name {domain};\n"
@@ -180,6 +191,7 @@ def create_app(config=None):
             f"    location / {{\n"
             f"        set $upstream {upstream};\n"
             f"        proxy_pass $upstream;\n"
+            f"{sse_directives}"
             f"    }}\n"
             f"}}\n"
         )
@@ -241,6 +253,7 @@ def create_app(config=None):
             'port': port_int,
             'name': name,
             'host': host,
+            'sse': sse,
             'conf_file': conf_filename,
             'registered_at': registered_at,
         }

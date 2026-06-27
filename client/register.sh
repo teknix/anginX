@@ -13,6 +13,9 @@
 #   # LAN host (service on a different machine):
 #   ANGINX_KEY=mykey ANGINX_URL=http://192.168.1.10 \
 #     ./register.sh app.1.com 7705 myapp 192.168.1.50
+#
+#   # SSE / streaming endpoint (disables nginx proxy buffering):
+#   ANGINX_KEY=mykey SSE=1 ./register.sh app.1.com 7705 myapp
 
 set -euo pipefail
 
@@ -23,6 +26,7 @@ HOST="${4:-}"
 
 ANGINX_URL="${ANGINX_URL:-http://anginx}"
 ANGINX_KEY="${ANGINX_KEY:-}"
+SSE="${SSE:-}"  # set to non-empty for Server-Sent Events / streaming
 
 # ── Validation ─────────────────────────────────────────────────────────────────
 
@@ -39,13 +43,11 @@ fi
 
 # ── Build payload ──────────────────────────────────────────────────────────────
 
-if [ -n "$HOST" ]; then
-    PAYLOAD=$(printf '{"domain":"%s","port":%s,"name":"%s","host":"%s"}' \
-        "$DOMAIN" "$PORT" "$NAME" "$HOST")
-else
-    PAYLOAD=$(printf '{"domain":"%s","port":%s,"name":"%s"}' \
-        "$DOMAIN" "$PORT" "$NAME")
-fi
+[ -n "$HOST" ] && HOST_FIELD=$(printf ',"host":"%s"' "$HOST") || HOST_FIELD=""
+[ -n "$SSE" ]  && SSE_FIELD=',"sse":true' || SSE_FIELD=""
+
+PAYLOAD=$(printf '{"domain":"%s","port":%s,"name":"%s"%s%s}' \
+    "$DOMAIN" "$PORT" "$NAME" "$HOST_FIELD" "$SSE_FIELD")
 
 # ── Register with retry on 503 ─────────────────────────────────────────────────
 
