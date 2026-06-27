@@ -42,8 +42,32 @@ ANGINX_API_KEY=devkey flask --app 'app:create_app()' run --port 5000
 # Unit tests (no Docker required)
 pytest tests/unit/
 
-# Integration tests (requires Docker)
-docker compose -f tests/integration/docker-compose.test.yml up --build --abort-on-container-exit
+# Integration tests (requires Docker). pytest runs on the HOST against the
+# containers exposed on localhost:18080.
+cd tests/integration
+
+# One-time: the stack mounts ./test-certs as nginx's certs. Registration 503s
+# without a cert matching the test domain, so generate a self-signed pair
+# (gitignored — not in a fresh clone):
+mkdir -p test-certs/live/app.test.com
+openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+  -keyout test-certs/live/app.test.com/privkey.pem \
+  -out test-certs/live/app.test.com/fullchain.pem \
+  -subj "/CN=app.test.com"
+
+# Bring up, run, tear down:
+docker compose -f docker-compose.test.yml up -d --build
+pytest test_integration.py
+docker compose -f docker-compose.test.yml down -v
+```
+
+If `docker compose ... up --build` fails with `compose build requires buildx
+0.17.0 or later`, build the image with plain `docker build` first, then `up`
+without `--build` (compose reuses the tagged image):
+
+```bash
+docker build -t integration-anginx ../..        # from tests/integration/
+docker compose -f docker-compose.test.yml up -d  # no --build
 ```
 
 Unit tests cover validation, conf header parsing, and registry rebuild. Add a test for any new validation rule or API behaviour before shipping.
