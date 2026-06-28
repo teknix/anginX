@@ -58,7 +58,8 @@ while [ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]; do
     ATTEMPT=$((ATTEMPT + 1))
 
     HTTP_CODE=$(curl -s -o /tmp/anginx_resp.json -w "%{http_code}" \
-        -X POST "${ANGINX_URL}/new/${ANGINX_KEY}" \
+        -X POST "${ANGINX_URL}/new" \
+        -H "Authorization: Bearer ${ANGINX_KEY}" \
         -H 'Content-Type: application/json' \
         -d "$PAYLOAD")
 

@@ -25,11 +25,12 @@ def get(path):
         return r.status, json.loads(r.read())
 
 
-def post(path, body, expect_error=False):
+def post(path, body, expect_error=False, key=KEY):
     data = json.dumps(body).encode()
     req = urllib.request.Request(
         f"{BASE}{path}", data=data,
-        headers={'Content-Type': 'application/json'}, method='POST'
+        headers={'Content-Type': 'application/json',
+                 'Authorization': f'Bearer {key}'}, method='POST'
     )
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
@@ -77,7 +78,7 @@ def test_services_empty_at_start():
 
 
 def test_register_service():
-    status, body = post(f'/new/{KEY}',
+    status, body = post('/new',
                         {'domain': DOMAIN, 'port': PORT, 'name': NAME})
     assert status == 200
     assert body['domain'] == DOMAIN
@@ -97,7 +98,7 @@ def test_health_shows_service_count():
 
 
 def test_idempotent_reregister():
-    status, body = post(f'/new/{KEY}',
+    status, body = post('/new',
                         {'domain': DOMAIN, 'port': PORT + 1, 'name': NAME})
     assert status == 200
     status, services = get(f'/services?key={KEY}')
@@ -107,14 +108,14 @@ def test_idempotent_reregister():
 
 
 def test_invalid_api_key_rejected():
-    code, body = post('/new/wrongkey',
+    code, body = post('/new',
                       {'domain': DOMAIN, 'port': PORT, 'name': NAME},
-                      expect_error=True)
+                      expect_error=True, key='wrongkey')
     assert code == 401
 
 
 def test_single_label_domain_rejected():
-    code, body = post(f'/new/{KEY}',
+    code, body = post('/new',
                       {'domain': 'nodot', 'port': PORT, 'name': NAME},
                       expect_error=True)
     assert code == 400

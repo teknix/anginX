@@ -177,9 +177,15 @@ def create_app(config=None):
     def key_ok(provided):
         return hmac.compare_digest(provided or '', app.config['ANGINX_API_KEY'])
 
-    @app.route('/new/<key>', methods=['POST'])
-    def register_service(key):
-        if not key_ok(key):
+    def bearer_key():
+        auth = request.headers.get('Authorization', '')
+        return auth[7:] if auth.startswith('Bearer ') else ''
+
+    @app.route('/new', methods=['POST'])
+    def register_service():
+        # Key travels in the Authorization header, not the URL — the path key
+        # used to land in access.log via $uri.
+        if not key_ok(bearer_key()):
             return jsonify({'error': 'invalid API key'}), 401
 
         data = request.get_json(silent=True)

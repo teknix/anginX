@@ -153,7 +153,8 @@ Existing `.conf` files on the volume still use the old format. Re-register each 
 curl -s -X DELETE "http://localhost/services/<domain>?key=<key>"
 
 # Re-register (use same domain/port/name/host as before)
-curl -s -X POST http://localhost/new/<key> \
+curl -s -X POST http://localhost/new \
+  -H "Authorization: Bearer <key>" \
   -H 'Content-Type: application/json' \
   -d '{"domain":"...","port":...,"name":"...","host":"..."}'
 ```

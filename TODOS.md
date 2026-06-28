@@ -15,12 +15,11 @@ Auto-deregister when the upstream process receives SIGTERM. Currently apps must 
 after 10s — tricky with gunicorn's signal propagation. Lower priority now that the TTL
 reaper self-heals stale routes within `ANGINX_TTL`; SIGTERM just makes cleanup instant.
 
-### Authorization: Bearer header
-Replace URL/query-param key with `Authorization: Bearer <key>` header on POST and
-DELETE. Breaking API change — requires major version bump. Do after v1 API stabilizes.
-The `$uri` log format keeps the query-param key out of access.log, but the path key in
-`POST /new/<key>` IS captured by `$uri` and written to access.log — that's the real
-remaining leak this fixes. (Control plane is LAN-only, so logs are local, but still.)
+### ~~Authorization: Bearer header (POST)~~ — DONE
+`POST /new` now takes `Authorization: Bearer <key>`; the path key is gone, so the secret
+no longer lands in access.log via `$uri`. Breaking change — clients updated in this repo.
+DELETE and `/dashboard` still take `?key=`; query strings aren't in the `$uri` log format,
+so they don't leak. Move those to the header too only if a real reason appears.
 
 ### Gunicorn multi-worker + cross-process lock
 Enable >1 worker for higher throughput. The in-process `threading.Lock` added for the

@@ -15,6 +15,8 @@ def _request(method, url, key=None, body=None, retries=3):
         try:
             data = json.dumps(body).encode() if body else None
             headers = {'Content-Type': 'application/json'} if data else {}
+            if key:
+                headers['Authorization'] = f'Bearer {key}'
             req = urllib.request.Request(url, data=data, headers=headers, method=method)
             with urllib.request.urlopen(req, timeout=10) as resp:
                 return json.loads(resp.read().decode())
@@ -51,7 +53,7 @@ def register(url, key, domain, port, name, host=None, sse=False, retries=3):
     the default), call this on a loop faster than the TTL, or use the threaded
     register_on_start.register_with_anginx() which heartbeats for you.
     """
-    endpoint = f"{url.rstrip('/')}/new/{key}"
+    endpoint = f"{url.rstrip('/')}/new"
     body = {'domain': domain, 'port': port, 'name': name}
     if host is not None:
         body['host'] = host

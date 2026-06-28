@@ -73,9 +73,10 @@ Docker DNS: container_name → container IP (resolved at request time)
 
 Single API key via `ANGINX_API_KEY` environment variable.
 
-- `POST /new/<key>`: key in URL path. **Known tradeoff:** URL keys appear in nginx access
-  logs. Mitigation: mask in log format. Upgrading to `Authorization: Bearer` header is TODOS.md.
-- `DELETE /services/<domain>?key=<key>`: key as query param. Same logging tradeoff.
+- ~~`POST /new/<key>`: key in URL path.~~ **RESOLVED:** now `POST /new` with
+  `Authorization: Bearer <key>` — key no longer in `$uri`, so it's out of access.log.
+- `DELETE /services/<domain>?key=<key>`: key as query param. Not logged (the `$uri` log
+  format excludes query strings), so no leak.
 - `GET /services`: **public**, no auth. Service registry (domain + port + name) is not sensitive.
 - `GET /dashboard?key=<key>`: key as query param.
 - `GET /health`: public, no auth.
@@ -422,8 +423,8 @@ log_format anginx '$remote_addr - $request_time [$time_local] '
                   '"$request_method $uri $server_protocol" $status $body_bytes_sent';
 ```
 Use `$uri` (not `$request_uri`) — `$uri` strips the query string, which eliminates `?key=`
-leakage. The `/new/<key>` path key IS still in `$uri`; mask it in the log format or accept
-the tradeoff (already documented in Auth Model). Log format named `anginx` is applied in the
+leakage. The registration key now travels in the `Authorization: Bearer` header (not the
+path), so nothing secret reaches `$uri`. Log format named `anginx` is applied in the
 port 80 server block: `access_log /var/log/nginx/access.log anginx;`
 
 ## Reviewer Concerns (resolved in final revision)

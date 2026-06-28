@@ -7,7 +7,7 @@ Self-registering nginx reverse proxy. Docker apps POST their domain and port; an
 ## How it works
 
 ```
-your-app  ──POST /new/<key>──▶  anginX  ──writes──▶  conf.d/myapp.email.1.com.conf
+your-app  ──POST /new (Bearer key)──▶  anginX  ──writes──▶  conf.d/myapp.email.1.com.conf
                                    │
                                nginx -t
                                nginx -s reload
@@ -54,7 +54,7 @@ ANGINX_MAX_SERVICES=100
 ```
 
 > **Heartbeat required.** With `ANGINX_TTL > 0` (the default), services must re-POST
-> to `/new/<key>` before the TTL expires or their route is removed. `register_on_start.py`
+> to `/new` before the TTL expires or their route is removed. `register_on_start.py`
 > heartbeats automatically; if you register by hand or with the synchronous `anginx_client`,
 > loop the call yourself or set `ANGINX_TTL=0`.
 
@@ -64,7 +64,8 @@ ANGINX_MAX_SERVICES=100
 
 ### Register a service
 ```
-POST /new/<key>
+POST /new
+Authorization: Bearer <key>
 Content-Type: application/json
 
 {
@@ -161,12 +162,14 @@ register('http://anginx', key, 'email.1.com', 7805, 'emailbox')
 
 ```bash
 # Docker same-network
-curl -s -X POST http://anginx/new/$ANGINX_KEY \
+curl -s -X POST http://anginx/new \
+  -H "Authorization: Bearer $ANGINX_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"domain":"email.1.com","port":7805,"name":"emailbox"}'
 
 # LAN host (service on a different machine)
-curl -s -X POST http://YOUR_SERVER_IP/new/$ANGINX_KEY \
+curl -s -X POST http://YOUR_SERVER_IP/new \
+  -H "Authorization: Bearer $ANGINX_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"domain":"email.1.com","port":7805,"name":"emailbox","host":"192.168.1.50"}'
 ```

@@ -71,9 +71,10 @@ def register_with_anginx(
         if host is not None:
             body['host'] = host
 
-        endpoint = f"{anginx_url.rstrip('/')}/new/{key}"
+        endpoint = f"{anginx_url.rstrip('/')}/new"
         data = json.dumps(body).encode()
-        headers = {'Content-Type': 'application/json'}
+        headers = {'Content-Type': 'application/json',
+                   'Authorization': f'Bearer {key}'}
 
         def post_once():
             req = urllib.request.Request(endpoint, data=data, headers=headers)

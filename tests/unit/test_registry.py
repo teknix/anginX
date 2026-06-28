@@ -39,11 +39,15 @@ def make_app(tmp_path):
     return app.test_client(), app, conf_d
 
 
+AUTH = {'Authorization': 'Bearer secret'}
+
+
 def post_register(client, domain='app.1.com', name='myapp', port=8080):
     return client.post(
-        '/new/secret',
+        '/new',
         data=json.dumps({'domain': domain, 'port': port, 'name': name}),
         content_type='application/json',
+        headers=AUTH,
     )
 
 
@@ -51,17 +55,25 @@ class TestRegister:
     def test_requires_valid_key(self, tmp_path):
         client, app, _ = make_app(tmp_path)
         with patch('subprocess.run'):
-            r = client.post('/new/wrongkey',
+            r = client.post('/new',
                             data=json.dumps({'domain': 'app.1.com', 'port': 80, 'name': 'x'}),
-                            content_type='application/json')
+                            content_type='application/json',
+                            headers={'Authorization': 'Bearer wrongkey'})
+        assert r.status_code == 401
+
+    def test_requires_auth_header(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        r = client.post('/new',
+                        data=json.dumps({'domain': 'app.1.com', 'port': 80, 'name': 'x'}),
+                        content_type='application/json')  # no header
         assert r.status_code == 401
 
     def test_rejects_bad_domain(self, tmp_path):
         client, app, _ = make_app(tmp_path)
         with patch('subprocess.run'):
-            r = client.post('/new/secret',
+            r = client.post('/new',
                             data=json.dumps({'domain': 'nodot', 'port': 80, 'name': 'x'}),
-                            content_type='application/json')
+                            content_type='application/json', headers=AUTH)
         assert r.status_code == 400
 
     def test_rejects_missing_cert(self, tmp_path):
@@ -89,10 +101,10 @@ class TestRegister:
         client, app, conf_d = make_app(tmp_path)
         with patch('subprocess.run'):
             r = client.post(
-                '/new/secret',
+                '/new',
                 data=json.dumps({'domain': 'app.1.com', 'port': 8080,
                                  'name': 'myapp', 'sse': True}),
-                content_type='application/json',
+                content_type='application/json', headers=AUTH,
             )
         assert r.status_code == 200
 
