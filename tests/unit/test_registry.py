@@ -83,6 +83,29 @@ class TestRegister:
         assert r.status_code == 503
         assert 'no certificate' in r.get_json()['error']
 
+    def test_http_fallback_when_allowed(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        app.config['ANGINX_ALLOW_HTTP'] = True
+        with patch('subprocess.run'):
+            r = post_register(client, domain='app.nocert.net', name='nocert')
+        assert r.status_code == 200
+        conf = open(os.path.join(conf_d, 'nocert.app.nocert.net.conf')).read()
+        assert 'listen 80;' in conf
+        assert 'acme-challenge' in conf          # cert can still be acquired
+        assert 'ssl_certificate' not in conf
+
+    def test_http_upgrades_to_https_when_cert_appears(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        app.config['ANGINX_ALLOW_HTTP'] = True
+        with patch('subprocess.run'):
+            post_register(client, domain='app.nocert.net', name='nocert')   # HTTP
+            make_cert(str(tmp_path / 'certs'), 'app.nocert.net')            # cert arrives
+            r = post_register(client, domain='app.nocert.net', name='nocert')  # re-register
+        assert r.status_code == 200
+        conf = open(os.path.join(conf_d, 'nocert.app.nocert.net.conf')).read()
+        assert 'listen 443 ssl;' in conf
+        assert 'listen 80;' not in conf
+
     def test_success_updates_registry(self, tmp_path):
         client, app, _ = make_app(tmp_path)
         with patch('subprocess.run'):

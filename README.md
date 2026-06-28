@@ -44,6 +44,7 @@ cd anginX
 | `ANGINX_MAX_SERVICES` | no | Max registered services (default: 100) |
 | `ANGINX_TTL` | no | Seconds before a non-heartbeating service is reaped (default: 90, `0` disables) |
 | `ANGINX_REAP_INTERVAL` | no | Reaper scan interval in seconds (default: 30) |
+| `ANGINX_ALLOW_HTTP` | no | `1` lets you register a domain before its cert exists — served over HTTP, auto-upgraded to HTTPS when a cert appears (default: `0`, which returns 503 until the cert is ready) |
 
 `.env` example:
 ```
@@ -85,7 +86,7 @@ Content-Type: application/json
 | 400 | Validation error (bad domain, port, name). Fix the payload. |
 | 401 | Wrong API key. |
 | 429 | Max services cap reached. |
-| 503 | Cert not yet acquired for this domain. Retry after a few seconds. |
+| 503 | Cert not yet acquired for this domain. Retry after a few seconds. (Suppressed when `ANGINX_ALLOW_HTTP=1` — the service is served over HTTP instead and auto-upgrades to HTTPS once a cert appears.) |
 
 ### Deregister a service
 ```

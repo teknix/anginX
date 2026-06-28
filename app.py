@@ -165,6 +165,9 @@ def create_app(config=None):
     # TTL reaper: drop services that stop heartbeating. 0 disables.
     app.config['ANGINX_TTL']           = int(os.environ.get('ANGINX_TTL', '90'))
     app.config['ANGINX_REAP_INTERVAL'] = int(os.environ.get('ANGINX_REAP_INTERVAL', '30'))
+    # Allow registering a domain before its cert exists: serve it over plain HTTP
+    # (keeping the ACME path open) and auto-upgrade to HTTPS once a cert appears.
+    app.config['ANGINX_ALLOW_HTTP']    = os.environ.get('ANGINX_ALLOW_HTTP', '0') == '1'
 
     if config:
         app.config.update(config)
@@ -213,7 +216,8 @@ def create_app(config=None):
 
         cert_dir  = os.path.join(app.config['CERTS_DIR'], 'live', domain)
         cert_file = os.path.join(cert_dir, 'fullchain.pem')
-        if not os.path.exists(cert_file):
+        has_cert  = os.path.exists(cert_file)
+        if not has_cert and not app.config['ANGINX_ALLOW_HTTP']:
             return jsonify({'error': f"no certificate for {domain} — cert-manager may still be acquiring it"}), 503
 
         registry  = app.config['_registry']
@@ -240,16 +244,11 @@ def create_app(config=None):
             f"        proxy_set_header Connection '';\n"
             f"        proxy_read_timeout 3600s;\n"
         ) if sse else ""
-        content = (
+        header = (
             f"# anginx: domain={domain} port={port_int} name={name} host={host}"
             f"{' sse=1' if sse else ''} registered_at={registered_at}\n"
-            f"server {{\n"
-            f"    listen 443 ssl;\n"
-            f"    server_name {domain};\n"
-            f"    ssl_certificate {cert_dir}/fullchain.pem;\n"
-            f"    ssl_certificate_key {cert_dir}/privkey.pem;\n"
-            f"    ssl_protocols TLSv1.2 TLSv1.3;\n"
-            f"    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+        )
+        proxy_location = (
             f"    include {app.config['CONF_BASE']}/_proxy.conf;\n"
             f"    resolver 127.0.0.11 valid=10s;\n"
             f"    location / {{\n"
@@ -257,8 +256,32 @@ def create_app(config=None):
             f"        proxy_pass $upstream;\n"
             f"{sse_directives}"
             f"    }}\n"
-            f"}}\n"
         )
+        if has_cert:
+            content = (
+                f"{header}"
+                f"server {{\n"
+                f"    listen 443 ssl;\n"
+                f"    server_name {domain};\n"
+                f"    ssl_certificate {cert_dir}/fullchain.pem;\n"
+                f"    ssl_certificate_key {cert_dir}/privkey.pem;\n"
+                f"    ssl_protocols TLSv1.2 TLSv1.3;\n"
+                f"    ssl_ciphers HIGH:!aNULL:!MD5;\n"
+                f"{proxy_location}"
+                f"}}\n"
+            )
+        else:
+            # No cert yet — serve over HTTP. The ACME location stays open so a cert
+            # can still be acquired; the next re-register auto-upgrades this to 443.
+            content = (
+                f"{header}"
+                f"server {{\n"
+                f"    listen 80;\n"
+                f"    server_name {domain};\n"
+                f"    location /.well-known/acme-challenge/ {{ root /var/www/acme; }}\n"
+                f"{proxy_location}"
+                f"}}\n"
+            )
 
         # Read original for rollback / heartbeat short-circuit
         original = None
