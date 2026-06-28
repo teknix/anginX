@@ -86,7 +86,7 @@ DELETE /services/<domain>?key=<key>
 
 ### List services
 ```
-GET /services
+GET /services?key=<key>
 ```
 
 ### Health check

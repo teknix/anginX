@@ -71,7 +71,7 @@ def test_health():
 
 
 def test_services_empty_at_start():
-    status, body = get('/services')
+    status, body = get(f'/services?key={KEY}')
     assert status == 200
     assert isinstance(body, list)
 
@@ -85,7 +85,7 @@ def test_register_service():
 
 
 def test_service_appears_in_list():
-    status, body = get('/services')
+    status, body = get(f'/services?key={KEY}')
     assert status == 200
     domains = [s['domain'] for s in body]
     assert DOMAIN in domains
@@ -100,7 +100,7 @@ def test_idempotent_reregister():
     status, body = post(f'/new/{KEY}',
                         {'domain': DOMAIN, 'port': PORT + 1, 'name': NAME})
     assert status == 200
-    status, services = get('/services')
+    status, services = get(f'/services?key={KEY}')
     match = [s for s in services if s['domain'] == DOMAIN]
     assert len(match) == 1
     assert match[0]['port'] == PORT + 1
@@ -127,7 +127,7 @@ def test_deregister_service():
 
 
 def test_service_gone_after_deregister():
-    status, body = get('/services')
+    status, body = get(f'/services?key={KEY}')
     assert DOMAIN not in [s['domain'] for s in body]
 
 

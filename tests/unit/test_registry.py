@@ -80,7 +80,7 @@ class TestRegister:
         assert body['name'] == 'myapp'
         assert body['port'] == 8080
 
-        services = client.get('/services').get_json()
+        services = client.get('/services?key=secret').get_json()
         assert len(services) == 1
         assert services[0]['domain'] == 'app.1.com'
 
@@ -100,7 +100,7 @@ class TestRegister:
         assert 'sse=1' in conf  # header marker
 
         # registry is rebuilt from the conf header, so this proves the round-trip
-        assert client.get('/services').get_json()[0]['sse'] is True
+        assert client.get('/services?key=secret').get_json()[0]['sse'] is True
 
     def test_non_sse_has_no_directives(self, tmp_path):
         client, app, conf_d = make_app(tmp_path)
@@ -109,7 +109,7 @@ class TestRegister:
         conf = open(os.path.join(conf_d, 'myapp.app.1.com.conf')).read()
         assert 'proxy_buffering' not in conf
         assert 'sse=' not in conf
-        assert client.get('/services').get_json()[0]['sse'] is False
+        assert client.get('/services?key=secret').get_json()[0]['sse'] is False
 
     def test_idempotent_overwrite(self, tmp_path):
         client, app, _ = make_app(tmp_path)
@@ -117,7 +117,7 @@ class TestRegister:
             post_register(client, port=8080)
             r = post_register(client, port=9090)
         assert r.status_code == 200
-        services = client.get('/services').get_json()
+        services = client.get('/services?key=secret').get_json()
         assert len(services) == 1
         assert services[0]['port'] == 9090
 
@@ -175,7 +175,7 @@ class TestDeregister:
             post_register(client)
             r = client.delete('/services/app.1.com?key=secret')
         assert r.status_code == 200
-        services = client.get('/services').get_json()
+        services = client.get('/services?key=secret').get_json()
         assert len(services) == 0
 
     def test_removes_conf_file(self, tmp_path):
@@ -189,11 +189,11 @@ class TestDeregister:
 class TestServices:
     def test_empty_returns_list(self, tmp_path):
         client, app, _ = make_app(tmp_path)
-        r = client.get('/services')
+        r = client.get('/services?key=secret')
         assert r.status_code == 200
         assert r.get_json() == []
 
-    def test_no_auth_required(self, tmp_path):
+    def test_requires_valid_key(self, tmp_path):
         client, app, _ = make_app(tmp_path)
-        r = client.get('/services')
-        assert r.status_code == 200
+        assert client.get('/services').status_code == 401
+        assert client.get('/services?key=wrong').status_code == 401

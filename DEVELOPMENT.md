@@ -109,7 +109,7 @@ The generated nginx conf is a single Python f-string in `register_service()`. Wh
 ### nginx config (`nginx.conf`)
 
 This file is baked into the image at build time. Changes require a rebuild and container restart. The file controls:
-- The API proxy locations (`/new/`, `/services`, `/health`, `/dashboard`)
+- The API proxy locations (`/new/`, `/services`, `/health`, `/dashboard`) — restricted to localhost + private LAN ranges via `conf.base/_lan_only.conf`; the public internet gets 403 on these. ACME and the HTTPS redirect stay public.
 - ACME challenge root
 - HTTP→HTTPS redirect for all non-service domains
 - Log format
@@ -158,7 +158,7 @@ curl -s -X POST http://localhost/new/<key> \
   -d '{"domain":"...","port":...,"name":"...","host":"..."}'
 ```
 
-Current registered services and their parameters: `GET http://localhost/services`
+Current registered services and their parameters: `GET http://localhost/services?key=<key>`
 
 ### nginx.conf or supervisord.conf changes only
 

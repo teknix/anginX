@@ -13,6 +13,8 @@ while [ ! -f /run/nginx.pid ]; do
 done
 echo "[start-gunicorn] nginx ready (pid=$(cat /run/nginx.pid)), starting gunicorn"
 
+# workers MUST stay 1: _registry is in-process state mutated without a lock.
+# >1 worker = divergent registries. Add a file lock around write+reload first.
 exec gunicorn \
     --workers=1 \
     --bind=127.0.0.1:5000 \

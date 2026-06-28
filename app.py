@@ -246,6 +246,7 @@ def create_app(config=None):
                 ['nginx', '-s', 'reload'], check=True, capture_output=True, timeout=5
             )
         except Exception as e:
+            rollback()  # keep conf.d in sync with the in-memory registry
             return jsonify({'error': f"nginx reload failed: {e}"}), 500
 
         registry[domain] = {
@@ -262,6 +263,8 @@ def create_app(config=None):
 
     @app.route('/services', methods=['GET'])
     def get_services():
+        if request.args.get('key', '') != app.config['ANGINX_API_KEY']:
+            return jsonify({'error': 'invalid API key'}), 401
         return jsonify(list(app.config['_registry'].values())), 200
 
     @app.route('/services/<domain>', methods=['DELETE'])
