@@ -42,6 +42,8 @@ cd anginX
 | `ANGINX_DOMAINS` | yes | Comma-separated list of exact domains to obtain certs for (e.g. `email.1.com,app.1.com`) |
 | `ANGINX_EMAIL` | yes | Email for Let's Encrypt registration |
 | `ANGINX_MAX_SERVICES` | no | Max registered services (default: 100) |
+| `ANGINX_TTL` | no | Seconds before a non-heartbeating service is reaped (default: 90, `0` disables) |
+| `ANGINX_REAP_INTERVAL` | no | Reaper scan interval in seconds (default: 30) |
 
 `.env` example:
 ```
@@ -50,6 +52,11 @@ ANGINX_DOMAINS=email.1.com,app.1.com
 ANGINX_EMAIL=admin@1.com
 ANGINX_MAX_SERVICES=100
 ```
+
+> **Heartbeat required.** With `ANGINX_TTL > 0` (the default), services must re-POST
+> to `/new/<key>` before the TTL expires or their route is removed. `register_on_start.py`
+> heartbeats automatically; if you register by hand or with the synchronous `anginx_client`,
+> loop the call yourself or set `ANGINX_TTL=0`.
 
 ---
 

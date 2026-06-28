@@ -4,26 +4,29 @@ Items not in v1 scope. Ordered by priority.
 
 ## P2 — Do soon after v1 ships
 
-### Heartbeat / TTL auto-deregistration
-Apps re-POST to `/new/<key>` every 30s. If a domain hasn't been seen in 90s, anginX
-deregisters it automatically. Requires APScheduler (or equivalent). Implement after
-manual deregistration has been in prod for a cycle.
+### ~~Heartbeat / TTL auto-deregistration~~ — DONE
+Background reaper thread (stdlib, no APScheduler) drops services whose last heartbeat is
+older than `ANGINX_TTL` (default 90s); `register_on_start.py` heartbeats every 30s.
+`reap_stale()` + `_lock` in `app.py`.
 
 ### SIGTERM handler in anginx-client
 Auto-deregister when the upstream process receives SIGTERM. Currently apps must call
 `deregister()` explicitly in shutdown handlers. Docker stop sends SIGTERM then SIGKILL
-after 10s — tricky with gunicorn's signal propagation. Pin this to the heartbeat TTL
-milestone so stale routes self-heal regardless.
+after 10s — tricky with gunicorn's signal propagation. Lower priority now that the TTL
+reaper self-heals stale routes within `ANGINX_TTL`; SIGTERM just makes cleanup instant.
 
 ### Authorization: Bearer header
 Replace URL/query-param key with `Authorization: Bearer <key>` header on POST and
 DELETE. Breaking API change — requires major version bump. Do after v1 API stabilizes.
-Baked-in nginx log format ($uri not $request_uri) already mitigates query-param leakage;
-URL path key in `/new/<key>` is the remaining gap.
+The `$uri` log format keeps the query-param key out of access.log, but the path key in
+`POST /new/<key>` IS captured by `$uri` and written to access.log — that's the real
+remaining leak this fixes. (Control plane is LAN-only, so logs are local, but still.)
 
-### Gunicorn multi-worker + file lock
-Enable >1 worker for higher throughput. Requires a file lock around the conf write +
-reload path to prevent concurrent reload races. Do after reload debouncing is in place.
+### Gunicorn multi-worker + cross-process lock
+Enable >1 worker for higher throughput. The in-process `threading.Lock` added for the
+reaper only serializes within one worker; >1 worker needs a file lock (e.g. `flock`)
+around the conf write + reload path, plus shared/rebuilt registry + last_seen state.
+Do after reload debouncing is in place.
 
 ## P3 — Nice to have
 

@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import pytest
 from unittest.mock import patch
 
@@ -197,3 +198,44 @@ class TestServices:
         client, app, _ = make_app(tmp_path)
         assert client.get('/services').status_code == 401
         assert client.get('/services?key=wrong').status_code == 401
+
+
+class TestReaper:
+    def test_reaps_stale_service(self, tmp_path):
+        from app import reap_stale
+        client, app, conf_d = make_app(tmp_path)
+        with patch('subprocess.run'):
+            post_register(client)
+            app.config['_last_seen']['app.1.com'] = time.monotonic() - 1000
+            removed = reap_stale(app)
+        assert removed == ['app.1.com']
+        assert 'app.1.com' not in app.config['_registry']
+        assert not os.path.exists(os.path.join(conf_d, 'myapp.app.1.com.conf'))
+
+    def test_keeps_fresh_service(self, tmp_path):
+        from app import reap_stale
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run'):
+            post_register(client)
+            removed = reap_stale(app)
+        assert removed == []
+        assert 'app.1.com' in app.config['_registry']
+
+    def test_ttl_zero_disables(self, tmp_path):
+        from app import reap_stale
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run'):
+            post_register(client)
+            app.config['ANGINX_TTL'] = 0
+            app.config['_last_seen']['app.1.com'] = time.monotonic() - 1000
+            assert reap_stale(app) == []
+        assert 'app.1.com' in app.config['_registry']
+
+    def test_heartbeat_skips_reload(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run') as run:
+            post_register(client)           # write: nginx -t + reload = 2 calls
+            calls_after_first = run.call_count
+            post_register(client)           # identical re-register = heartbeat
+        assert run.call_count == calls_after_first  # no extra nginx invocations
+        assert app.config['_registry']['app.1.com']['registered_at']

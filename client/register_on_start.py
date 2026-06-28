@@ -43,9 +43,11 @@ def register_with_anginx(
     retry_delay=5,
     cert_retry_delay=10,
     startup_delay=2,
+    heartbeat_interval=30,
 ):
     """
-    Register this service with anginX in a background daemon thread.
+    Register this service with anginX in a background daemon thread, then
+    heartbeat to keep the route alive against anginX's TTL reaper.
 
     Retries on transient errors and 503 (cert not yet acquired).
     Returns immediately; registration happens in the background.
@@ -60,6 +62,8 @@ def register_with_anginx(
     retry_delay     -- seconds between retries on network errors
     cert_retry_delay-- seconds to wait when cert isn't ready yet (503)
     startup_delay   -- seconds to wait before first attempt (let app stabilise)
+    heartbeat_interval -- seconds between heartbeats; keep < anginX's ANGINX_TTL
+                          (default 90). 0 disables heartbeating.
     """
     def _register():
         time.sleep(startup_delay)
@@ -71,13 +75,18 @@ def register_with_anginx(
         data = json.dumps(body).encode()
         headers = {'Content-Type': 'application/json'}
 
+        def post_once():
+            req = urllib.request.Request(endpoint, data=data, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read().decode())
+
+        registered = False
         for attempt in range(1, max_attempts + 1):
             try:
-                req = urllib.request.Request(endpoint, data=data, headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read().decode())
-                    print(f"[anginx] registered {domain} → {name}:{port} (attempt {attempt})")
-                    return result
+                post_once()
+                print(f"[anginx] registered {domain} → {name}:{port} (attempt {attempt})")
+                registered = True
+                break
             except urllib.error.HTTPError as e:
                 body_text = e.read().decode('utf-8', errors='replace')
                 try:
@@ -98,8 +107,20 @@ def register_with_anginx(
                 print(f"[anginx] connection error (attempt {attempt}/{max_attempts}): {e}")
                 time.sleep(retry_delay)
 
-        print(f"[anginx] gave up registering {domain} after {max_attempts} attempts")
-        return None
+        if not registered:
+            print(f"[anginx] gave up registering {domain} after {max_attempts} attempts")
+            return None
+
+        # Heartbeat — re-POST is a no-op on the server (no reload) unless the
+        # route was reaped, in which case it re-creates it. Self-healing.
+        if heartbeat_interval <= 0:
+            return None
+        while True:
+            time.sleep(heartbeat_interval)
+            try:
+                post_once()
+            except Exception as e:
+                print(f"[anginx] heartbeat failed for {domain}: {e}")
 
     t = threading.Thread(target=_register, daemon=True, name="anginx-register")
     t.start()

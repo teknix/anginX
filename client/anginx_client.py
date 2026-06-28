@@ -46,6 +46,10 @@ def register(url, key, domain, port, name, host=None, sse=False, retries=3):
     name   -- label used in conf filename; also Docker DNS name if host omitted
     host   -- upstream IP or hostname (omit for Docker containers on same network)
     sse    -- True for SSE / streaming endpoints (disables nginx proxy buffering)
+
+    NOTE: this registers once. With anginX's TTL reaper enabled (ANGINX_TTL > 0,
+    the default), call this on a loop faster than the TTL, or use the threaded
+    register_on_start.register_with_anginx() which heartbeats for you.
     """
     endpoint = f"{url.rstrip('/')}/new/{key}"
     body = {'domain': domain, 'port': port, 'name': name}

@@ -1,7 +1,9 @@
 import os
 import re
 import hmac
+import time
 import errno
+import threading
 import subprocess
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify, render_template
@@ -104,6 +106,53 @@ def rebuild_registry(conf):
     return registry
 
 
+def reap_stale(app):
+    """Remove services whose last heartbeat is older than ANGINX_TTL.
+
+    Reloads nginx once for the whole batch. Returns the reaped domains.
+    Takes the same lock as register/deregister so writes never interleave.
+    """
+    ttl = app.config['ANGINX_TTL']
+    if ttl <= 0:
+        return []
+    now = time.monotonic()
+    registry  = app.config['_registry']
+    last_seen = app.config['_last_seen']
+    removed = []
+    with app.config['_lock']:
+        stale = [d for d in list(registry)
+                 if now - last_seen.get(d, now) > ttl]
+        for domain in stale:
+            conf_path = os.path.join(app.config['CONF_D'], registry[domain]['conf_file'])
+            try:
+                if os.path.exists(conf_path):
+                    os.remove(conf_path)
+            except OSError as e:
+                print(f"[anginx] reaper: could not remove {conf_path}: {e}")
+                continue
+            registry.pop(domain, None)
+            last_seen.pop(domain, None)
+            removed.append(domain)
+        if removed:
+            try:
+                subprocess.run(['nginx', '-s', 'reload'],
+                               check=True, capture_output=True, timeout=5)
+            except Exception as e:
+                print(f"[anginx] reaper: nginx reload failed: {e}")
+    return removed
+
+
+def _reaper_loop(app):
+    interval = app.config['ANGINX_REAP_INTERVAL']
+    while True:
+        time.sleep(interval)
+        try:
+            for domain in reap_stale(app):
+                print(f"[anginx] reaped stale service: {domain}")
+        except Exception as e:
+            print(f"[anginx] reaper error: {e}")
+
+
 def create_app(config=None):
     app = Flask(__name__)
 
@@ -113,11 +162,17 @@ def create_app(config=None):
     app.config['CONF_BASE']           = os.environ.get('CONF_BASE', '/etc/nginx/conf.base')
     app.config['CERTS_DIR']           = os.environ.get('CERTS_DIR', '/etc/nginx/certs')
     app.config['NGINX_PID']           = os.environ.get('NGINX_PID', '/run/nginx.pid')
+    # TTL reaper: drop services that stop heartbeating. 0 disables.
+    app.config['ANGINX_TTL']           = int(os.environ.get('ANGINX_TTL', '90'))
+    app.config['ANGINX_REAP_INTERVAL'] = int(os.environ.get('ANGINX_REAP_INTERVAL', '30'))
 
     if config:
         app.config.update(config)
 
     app.config['_registry'] = rebuild_registry(app.config)
+    # last_seen guards the reaper; existing confs get a full grace window at boot.
+    app.config['_last_seen'] = {d: time.monotonic() for d in app.config['_registry']}
+    app.config['_lock'] = threading.Lock()  # serializes conf write + reload across threads
 
     def key_ok(provided):
         return hmac.compare_digest(provided or '', app.config['ANGINX_API_KEY'])
@@ -155,7 +210,8 @@ def create_app(config=None):
         if not os.path.exists(cert_file):
             return jsonify({'error': f"no certificate for {domain} — cert-manager may still be acquiring it"}), 503
 
-        registry = app.config['_registry']
+        registry  = app.config['_registry']
+        last_seen = app.config['_last_seen']
         if domain not in registry and len(registry) >= app.config['ANGINX_MAX_SERVICES']:
             return jsonify({'error': 'max services cap reached'}), 429
 
@@ -163,7 +219,11 @@ def create_app(config=None):
         conf_path = os.path.join(app.config['CONF_D'], conf_filename)
         tmp_path  = conf_path + '.tmp'
 
-        registered_at = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        # Preserve the original registration time so an unchanged heartbeat
+        # produces byte-identical conf and can skip the reload.
+        existing = registry.get(domain)
+        registered_at = existing['registered_at'] if existing else \
+            datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
         upstream = f"http://{host}:{port_int}"
         # SSE needs unbuffered, keep-alive HTTP/1.1 with a long read timeout
@@ -194,7 +254,7 @@ def create_app(config=None):
             f"}}\n"
         )
 
-        # Read original for rollback if overwriting
+        # Read original for rollback / heartbeat short-circuit
         original = None
         if os.path.exists(conf_path):
             try:
@@ -203,59 +263,66 @@ def create_app(config=None):
             except Exception:
                 pass
 
-        try:
-            with open(tmp_path, 'w') as f:
-                f.write(content)
-            os.rename(tmp_path, conf_path)
-        except PermissionError:
-            return jsonify({'error': 'conf.d not writable — check volume mount'}), 500
-        except OSError as e:
-            if e.errno == errno.ENOSPC:
-                return jsonify({'error': 'disk full'}), 500
-            return jsonify({'error': str(e)}), 500
+        # Heartbeat: an unchanged re-registration just refreshes last_seen — no reload.
+        if existing and original == content:
+            last_seen[domain] = time.monotonic()
+            return jsonify(existing), 200
 
-        def rollback():
-            if original is not None:
-                try:
-                    with open(conf_path, 'w') as f:
-                        f.write(original)
-                except Exception:
-                    pass
-            elif os.path.exists(conf_path):
-                try:
-                    os.remove(conf_path)
-                except Exception:
-                    pass
+        with app.config['_lock']:
+            try:
+                with open(tmp_path, 'w') as f:
+                    f.write(content)
+                os.rename(tmp_path, conf_path)
+            except PermissionError:
+                return jsonify({'error': 'conf.d not writable — check volume mount'}), 500
+            except OSError as e:
+                if e.errno == errno.ENOSPC:
+                    return jsonify({'error': 'disk full'}), 500
+                return jsonify({'error': str(e)}), 500
 
-        try:
-            subprocess.run(
-                ['nginx', '-t'], check=True, capture_output=True, timeout=5
-            )
-        except subprocess.TimeoutExpired:
-            rollback()
-            return jsonify({'error': 'nginx -t timed out'}), 500
-        except subprocess.CalledProcessError as e:
-            rollback()
-            stderr = e.stderr.decode('utf-8', errors='replace')
-            return jsonify({'error': f"nginx config invalid: {stderr}"}), 400
+            def rollback():
+                if original is not None:
+                    try:
+                        with open(conf_path, 'w') as f:
+                            f.write(original)
+                    except Exception:
+                        pass
+                elif os.path.exists(conf_path):
+                    try:
+                        os.remove(conf_path)
+                    except Exception:
+                        pass
 
-        try:
-            subprocess.run(
-                ['nginx', '-s', 'reload'], check=True, capture_output=True, timeout=5
-            )
-        except Exception as e:
-            rollback()  # keep conf.d in sync with the in-memory registry
-            return jsonify({'error': f"nginx reload failed: {e}"}), 500
+            try:
+                subprocess.run(
+                    ['nginx', '-t'], check=True, capture_output=True, timeout=5
+                )
+            except subprocess.TimeoutExpired:
+                rollback()
+                return jsonify({'error': 'nginx -t timed out'}), 500
+            except subprocess.CalledProcessError as e:
+                rollback()
+                stderr = e.stderr.decode('utf-8', errors='replace')
+                return jsonify({'error': f"nginx config invalid: {stderr}"}), 400
 
-        registry[domain] = {
-            'domain': domain,
-            'port': port_int,
-            'name': name,
-            'host': host,
-            'sse': sse,
-            'conf_file': conf_filename,
-            'registered_at': registered_at,
-        }
+            try:
+                subprocess.run(
+                    ['nginx', '-s', 'reload'], check=True, capture_output=True, timeout=5
+                )
+            except Exception as e:
+                rollback()  # keep conf.d in sync with the in-memory registry
+                return jsonify({'error': f"nginx reload failed: {e}"}), 500
+
+            registry[domain] = {
+                'domain': domain,
+                'port': port_int,
+                'name': name,
+                'host': host,
+                'sse': sse,
+                'conf_file': conf_filename,
+                'registered_at': registered_at,
+            }
+            last_seen[domain] = time.monotonic()
 
         return jsonify(registry[domain]), 200
 
@@ -278,51 +345,53 @@ def create_app(config=None):
         service  = registry[domain]
         conf_path = os.path.join(app.config['CONF_D'], service['conf_file'])
 
-        original = None
-        if os.path.exists(conf_path):
-            try:
-                with open(conf_path) as f:
-                    original = f.read()
-            except Exception:
-                pass
-
-        try:
+        with app.config['_lock']:
+            original = None
             if os.path.exists(conf_path):
-                os.remove(conf_path)
-        except PermissionError:
-            return jsonify({'error': 'conf.d not writable — check volume mount'}), 500
-        except OSError as e:
-            return jsonify({'error': str(e)}), 500
-
-        def restore():
-            if original is not None:
                 try:
-                    with open(conf_path, 'w') as f:
-                        f.write(original)
+                    with open(conf_path) as f:
+                        original = f.read()
                 except Exception:
                     pass
 
-        try:
-            subprocess.run(
-                ['nginx', '-t'], check=True, capture_output=True, timeout=5
-            )
-        except subprocess.TimeoutExpired:
-            restore()
-            return jsonify({'error': 'nginx -t timed out'}), 500
-        except subprocess.CalledProcessError as e:
-            restore()
-            stderr = e.stderr.decode('utf-8', errors='replace')
-            return jsonify({'error': f"nginx config invalid after delete: {stderr}"}), 500
+            try:
+                if os.path.exists(conf_path):
+                    os.remove(conf_path)
+            except PermissionError:
+                return jsonify({'error': 'conf.d not writable — check volume mount'}), 500
+            except OSError as e:
+                return jsonify({'error': str(e)}), 500
 
-        try:
-            subprocess.run(
-                ['nginx', '-s', 'reload'], check=True, capture_output=True, timeout=5
-            )
-        except Exception as e:
-            restore()
-            return jsonify({'error': f"nginx reload failed: {e}"}), 500
+            def restore():
+                if original is not None:
+                    try:
+                        with open(conf_path, 'w') as f:
+                            f.write(original)
+                    except Exception:
+                        pass
 
-        registry.pop(domain, None)
+            try:
+                subprocess.run(
+                    ['nginx', '-t'], check=True, capture_output=True, timeout=5
+                )
+            except subprocess.TimeoutExpired:
+                restore()
+                return jsonify({'error': 'nginx -t timed out'}), 500
+            except subprocess.CalledProcessError as e:
+                restore()
+                stderr = e.stderr.decode('utf-8', errors='replace')
+                return jsonify({'error': f"nginx config invalid after delete: {stderr}"}), 500
+
+            try:
+                subprocess.run(
+                    ['nginx', '-s', 'reload'], check=True, capture_output=True, timeout=5
+                )
+            except Exception as e:
+                restore()
+                return jsonify({'error': f"nginx reload failed: {e}"}), 500
+
+            registry.pop(domain, None)
+            app.config['_last_seen'].pop(domain, None)
         return jsonify({'domain': domain, 'removed': True}), 200
 
     @app.route('/health', methods=['GET'])
@@ -341,5 +410,9 @@ def create_app(config=None):
             return 'invalid API key', 401
         services = list(app.config['_registry'].values())
         return render_template('dashboard.html', services=services)
+
+    # Background reaper — skipped under tests (call reap_stale directly instead).
+    if app.config['ANGINX_TTL'] > 0 and not app.config.get('TESTING'):
+        threading.Thread(target=_reaper_loop, args=(app,), daemon=True).start()
 
     return app
