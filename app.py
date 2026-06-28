@@ -1,5 +1,6 @@
 import os
 import re
+import hmac
 import errno
 import subprocess
 from datetime import datetime, timezone
@@ -54,12 +55,6 @@ def validate_port(port):
     if p not in PORT_RANGE:
         raise ValidationError("port must be in range 1–65535")
     return p
-
-
-def extract_root_domain(domain):
-    parts = domain.lower().split('.')
-    slug = ''.join(parts[-2:])
-    return '.'.join(parts[-2:]), slug
 
 
 def check_nginx(conf):
@@ -124,9 +119,12 @@ def create_app(config=None):
 
     app.config['_registry'] = rebuild_registry(app.config)
 
+    def key_ok(provided):
+        return hmac.compare_digest(provided or '', app.config['ANGINX_API_KEY'])
+
     @app.route('/new/<key>', methods=['POST'])
     def register_service(key):
-        if key != app.config['ANGINX_API_KEY']:
+        if not key_ok(key):
             return jsonify({'error': 'invalid API key'}), 401
 
         data = request.get_json(silent=True)
@@ -263,14 +261,13 @@ def create_app(config=None):
 
     @app.route('/services', methods=['GET'])
     def get_services():
-        if request.args.get('key', '') != app.config['ANGINX_API_KEY']:
+        if not key_ok(request.args.get('key', '')):
             return jsonify({'error': 'invalid API key'}), 401
         return jsonify(list(app.config['_registry'].values())), 200
 
     @app.route('/services/<domain>', methods=['DELETE'])
     def deregister_service(domain):
-        key = request.args.get('key', '')
-        if key != app.config['ANGINX_API_KEY']:
+        if not key_ok(request.args.get('key', '')):
             return jsonify({'error': 'invalid API key'}), 401
 
         domain = domain.lower()
@@ -340,8 +337,7 @@ def create_app(config=None):
 
     @app.route('/dashboard', methods=['GET'])
     def dashboard():
-        key = request.args.get('key', '')
-        if key != app.config['ANGINX_API_KEY']:
+        if not key_ok(request.args.get('key', '')):
             return 'invalid API key', 401
         services = list(app.config['_registry'].values())
         return render_template('dashboard.html', services=services)
