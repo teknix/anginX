@@ -39,6 +39,7 @@ def register_with_anginx(
     port,
     name,
     host=None,
+    sse=False,
     max_attempts=20,
     retry_delay=5,
     cert_retry_delay=10,
@@ -70,6 +71,8 @@ def register_with_anginx(
         body = {'domain': domain, 'port': port, 'name': name}
         if host is not None:
             body['host'] = host
+        if sse:
+            body['sse'] = True
 
         endpoint = f"{anginx_url.rstrip('/')}/new"
         data = json.dumps(body).encode()

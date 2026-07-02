@@ -10,3 +10,6 @@ dist/
 tests/integration/test-certs/
 idea
 .antigravitycli/
+*.bak
+*.bak.*
+.env.bak.*
