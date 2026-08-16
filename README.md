@@ -45,6 +45,10 @@ cd anginX
 | `ANGINX_TTL` | no | Seconds before a non-heartbeating service is reaped (default: 90, `0` disables) |
 | `ANGINX_REAP_INTERVAL` | no | Reaper scan interval in seconds (default: 30) |
 | `ANGINX_ALLOW_HTTP` | no | `1` lets you register a domain before its cert exists — served over HTTP, auto-upgraded to HTTPS when a cert appears (default: `0`, which returns 503 until the cert is ready) |
+| `ANGINX_DNS01_DOMAINS` | no | Comma-separated subset of `ANGINX_DOMAINS` to validate via **DNS-01** instead of HTTP-01. For zones whose WAF/CDN interferes with the HTTP challenge. Requires the `certbot-dns-cloudflare` plugin and credentials |
+| `ANGINX_CF_API_TOKEN` | no | Cloudflare API token (`Zone:DNS:Edit` on the zone). Written to the credentials file at startup if that file does not already exist |
+| `ANGINX_CF_CREDENTIALS` | no | Path to the `dns_cloudflare_api_token = …` ini (default: `/etc/nginx/certs/cloudflare.ini`, i.e. inside the certs volume so it survives rebuilds) |
+| `ANGINX_DNS01_PROPAGATION` | no | Seconds to wait for DNS propagation before validation (default: `30`) |
 
 `.env` example:
 ```
@@ -53,6 +57,34 @@ ANGINX_DOMAINS=email.1.com,app.1.com
 ANGINX_EMAIL=admin@1.com
 ANGINX_MAX_SERVICES=100
 ```
+
+### When HTTP-01 will not work (DNS-01)
+
+Most domains behind a CDN are fine — the proxy passes `/.well-known/acme-challenge/` through.
+But a zone-level WAF, bot-protection or geo/firewall rule can **403 the challenge for some of
+Let's Encrypt's validation vantage points while serving it perfectly to others**. LE validates
+from multiple perspectives and fails the order if any secondary perspective fails, so this shows
+up as an *unreproducible* failure: the challenge URL returns `200` from every machine you own,
+yet issuance fails with `During secondary validation: … 403`.
+
+Rather than trying to reverse-engineer the CDN rule, move that one domain to DNS-01 — it never
+touches the HTTP edge:
+
+```
+ANGINX_DNS01_DOMAINS=stubborn.example.com
+ANGINX_CF_API_TOKEN=<token with Zone:DNS:Edit on that zone>
+```
+
+Only list domains that need it: HTTP-01 requires no secret, so every domain you add here widens
+the blast radius of an API token sitting in the container. Domains not listed keep using HTTP-01.
+
+If the plugin or the credentials are missing, that domain is **skipped with an explicit error and
+its existing cert is left intact** — it deliberately does *not* fall back to HTTP-01, since the
+only reason to be on this list is that HTTP-01 does not work, and a silent fallback would just
+burn Let's Encrypt failed-validation rate limit.
+
+Renewals need no extra config: certbot records the authenticator in the renewal conf, so the 12 h
+renew loop reuses DNS-01 (and the credentials path) automatically.
 
 > **Heartbeat required.** With `ANGINX_TTL > 0` (the default), services must re-POST
 > to `/new` before the TTL expires or their route is removed. `register_on_start.py`
