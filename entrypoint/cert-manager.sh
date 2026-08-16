@@ -114,12 +114,12 @@ acquire() {
         # and reinstate the confusing "works from here, 403 for the CA" symptom.
         if ! certbot plugins --non-interactive 2>/dev/null | grep -q dns-cloudflare; then
             echo "[cert-manager] ${domain}: DNS-01 requested but the certbot-dns-cloudflare plugin is NOT installed — rebuild the image (it is in requirements.txt). Skipping." >&2
-            [ -n "$foreign_bak" ] && { rm -rf "$live_dir"; mv "$foreign_bak" "$live_dir"; }
+            [ -n "$foreign_bak" ] && { rm -rf "$live_dir"; mv "$foreign_bak" "$live_dir"; echo "[cert-manager] ${domain}: existing cert left in place (no issuance attempted)" >&2; }
             return 1
         fi
         if [ ! -f "$ANGINX_CF_CREDENTIALS" ]; then
             echo "[cert-manager] ${domain}: DNS-01 requested but no credentials at ${ANGINX_CF_CREDENTIALS} (set ANGINX_CF_API_TOKEN or place the ini). Skipping." >&2
-            [ -n "$foreign_bak" ] && { rm -rf "$live_dir"; mv "$foreign_bak" "$live_dir"; }
+            [ -n "$foreign_bak" ] && { rm -rf "$live_dir"; mv "$foreign_bak" "$live_dir"; echo "[cert-manager] ${domain}: existing cert left in place (no issuance attempted)" >&2; }
             return 1
         fi
         echo "[cert-manager] acquiring cert for ${domain} via DNS-01 (cloudflare)..."
