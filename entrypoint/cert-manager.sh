@@ -24,6 +24,16 @@ RENEW_INTERVAL=43200  # 12 hours
 # file. Kept opt-in per domain: HTTP-01 needs no secret, so only domains that
 # actually need it should hand this container an API token's blast radius.
 ANGINX_DNS01_DOMAINS="${ANGINX_DNS01_DOMAINS:-}"
+# Also accept the list from a file in the certs volume. Env vars are fixed at
+# container creation, so requiring one would mean recreating the container to
+# move a single domain to DNS-01 — and recreating this container blinks EVERY
+# domain on the edge. A file lets it be changed with just a cert-manager restart.
+ANGINX_DNS01_DOMAINS_FILE="${ANGINX_DNS01_DOMAINS_FILE:-${CERTS_DIR}/dns01-domains}"
+if [ -f "$ANGINX_DNS01_DOMAINS_FILE" ]; then
+    _from_file=$(tr '\n' ',' < "$ANGINX_DNS01_DOMAINS_FILE" | tr -d ' ')
+    ANGINX_DNS01_DOMAINS="${ANGINX_DNS01_DOMAINS},${_from_file}"
+    echo "[cert-manager] DNS-01 domains additionally read from ${ANGINX_DNS01_DOMAINS_FILE}"
+fi
 # Lives in the certs volume so it survives rebuilds alongside the certs it issues.
 ANGINX_CF_CREDENTIALS="${ANGINX_CF_CREDENTIALS:-${CERTS_DIR}/cloudflare.ini}"
 # DNS propagation grace before certbot asks the CA to validate.
