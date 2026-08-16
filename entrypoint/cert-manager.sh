@@ -26,8 +26,19 @@ echo "[cert-manager] nginx ready (pid=$(cat /run/nginx.pid))"
 acquire() {
     local domain="$1"
     local live_dir="${CERTS_DIR}/live/${domain}"
+    local renewal_conf="${CERTS_DIR}/renewal/${domain}.conf"
+    local foreign_bak=""
 
-    if [ -f "${live_dir}/fullchain.pem" ]; then
+    # A cert FILE existing is not proof of a cert we can actually renew.
+    # It is common during a migration to hand-drop a self-signed placeholder
+    # into live/<domain>/ so the vhost can serve HTTPS before DNS/NAT points
+    # here. Keying only on the file made that placeholder suppress issuance
+    # permanently: acquire() returned early on every boot, and `certbot renew`
+    # skipped it too (it only renews lineages it owns), so the domain served
+    # the placeholder forever with nothing in the log but "cert already exists".
+    # certbot's own renewal conf is the authoritative marker of "certbot issued
+    # this", so require both before considering the domain done.
+    if [ -f "${live_dir}/fullchain.pem" ] && [ -f "$renewal_conf" ]; then
         echo "[cert-manager] cert already exists for ${domain}"
         return 0
     fi
@@ -37,8 +48,19 @@ acquire() {
         return 1
     fi
 
+    # Set a foreign cert aside so certbot claims the canonical lineage name.
+    # Left in place, certbot would create <domain>-0001, which no vhost
+    # references — issuance would "succeed" while nginx kept serving the
+    # placeholder.
+    if [ -f "${live_dir}/fullchain.pem" ]; then
+        foreign_bak="${CERTS_DIR}/foreign-backups/${domain}-$(date +%Y%m%d%H%M%S)"
+        echo "[cert-manager] ${domain}: foreign (non-certbot) cert present — setting aside as ${foreign_bak}"
+        mkdir -p "${CERTS_DIR}/foreign-backups"
+        mv "$live_dir" "$foreign_bak"
+    fi
+
     echo "[cert-manager] acquiring cert for ${domain}..."
-    certbot certonly \
+    if certbot certonly \
         --config-dir "$CERTS_DIR" \
         --work-dir /var/lib/certbot \
         --logs-dir /var/log/certbot \
@@ -48,8 +70,22 @@ acquire() {
         --agree-tos \
         --email "$ANGINX_EMAIL" \
         -d "$domain" \
-        --expand
-    echo "[cert-manager] cert acquired for ${domain}"
+        --expand; then
+        echo "[cert-manager] cert acquired for ${domain}"
+        [ -n "$foreign_bak" ] && rm -rf "$foreign_bak"
+        return 0
+    fi
+
+    # Issuance failed (CA unreachable, WAF blocking the challenge, rate limit).
+    # If we displaced a cert to try, put it back: the vhost references that
+    # path, and without it `nginx -t` fails and no reload can ever succeed.
+    echo "[cert-manager] cert acquisition FAILED for ${domain}" >&2
+    if [ -n "$foreign_bak" ]; then
+        rm -rf "$live_dir"
+        mv "$foreign_bak" "$live_dir"
+        echo "[cert-manager] ${domain}: restored previous cert after failed issuance" >&2
+    fi
+    return 1
 }
 
 # Initial acquisition for each domain in ANGINX_DOMAINS (comma-separated)
