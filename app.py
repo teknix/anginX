@@ -168,6 +168,10 @@ def create_app(config=None):
     # Allow registering a domain before its cert exists: serve it over plain HTTP
     # (keeping the ACME path open) and auto-upgrade to HTTPS once a cert appears.
     app.config['ANGINX_ALLOW_HTTP']    = os.environ.get('ANGINX_ALLOW_HTTP', '0') == '1'
+    # Domains only LAN/WireGuard clients may reach (conf.base/_lan_only.conf). Enforced here, not
+    # by the client, so a heartbeat that omits the flag can't open a LAN service to the internet.
+    # Env list plus <CERTS_DIR>/lan-only-domains, re-read on every registration (no restart).
+    app.config['ANGINX_LAN_ONLY_DOMAINS'] = os.environ.get('ANGINX_LAN_ONLY_DOMAINS', '')
 
     if config:
         app.config.update(config)
@@ -176,6 +180,16 @@ def create_app(config=None):
     # last_seen guards the reaper; existing confs get a full grace window at boot.
     app.config['_last_seen'] = {d: time.monotonic() for d in app.config['_registry']}
     app.config['_lock'] = threading.Lock()  # serializes conf write + reload across threads
+
+    def lan_only_domains():
+        names = app.config['ANGINX_LAN_ONLY_DOMAINS'].replace(',', ' ').split()
+        path = os.path.join(app.config['CERTS_DIR'], 'lan-only-domains')
+        try:
+            with open(path) as f:
+                names += f.read().replace(',', ' ').split()
+        except OSError:
+            pass
+        return {n.strip().lower() for n in names if n.strip()}
 
     def key_ok(provided):
         return hmac.compare_digest(provided or '', app.config['ANGINX_API_KEY'])
@@ -200,6 +214,7 @@ def create_app(config=None):
         port   = data.get('port')
         host   = data.get('host', '')  # optional — upstream IP or hostname; defaults to name
         sse    = bool(data.get('sse'))  # streaming endpoint — disable proxy buffering
+        lan    = bool(data.get('lan_only'))  # client may ask; lan_only_domains() is checked below
 
         try:
             validate_domain(domain)
@@ -236,6 +251,8 @@ def create_app(config=None):
             datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
         upstream = f"http://{host}:{port_int}"
+        lan = lan or domain in lan_only_domains()
+        lan_directive = f"        include {app.config['CONF_BASE']}/_lan_only.conf;\n" if lan else ""
         # SSE needs unbuffered, keep-alive HTTP/1.1 with a long read timeout
         sse_directives = (
             f"        proxy_buffering off;\n"
@@ -252,6 +269,7 @@ def create_app(config=None):
             f"    include {app.config['CONF_BASE']}/_proxy.conf;\n"
             f"    resolver 127.0.0.11 valid=10s;\n"
             f"    location / {{\n"
+            f"{lan_directive}"
             f"        set $upstream {upstream};\n"
             f"        proxy_pass $upstream;\n"
             f"{sse_directives}"

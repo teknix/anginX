@@ -274,3 +274,23 @@ class TestReaper:
             post_register(client)           # identical re-register = heartbeat
         assert run.call_count == calls_after_first  # no extra nginx invocations
         assert app.config['_registry']['app.1.com']['registered_at']
+
+    def test_lan_only_domain_file_enforced_without_client_flag(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        with open(tmp_path / 'certs' / 'lan-only-domains', 'w') as f:
+            f.write('app.1.com\n')
+        with patch('subprocess.run'):
+            r = post_register(client)  # heartbeat sends no lan_only flag
+        assert r.status_code == 200
+        conf = open(os.path.join(conf_d, 'myapp.app.1.com.conf')).read()
+        assert '_lan_only.conf;' in conf.split('location / {')[1]
+
+    def test_lan_only_client_flag_and_default_off(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        with patch('subprocess.run'):
+            post_register(client, domain='a.1.com', name='a')
+            client.post('/new', data=json.dumps({'domain': 'b.1.com', 'port': 8080, 'name': 'b',
+                                                 'lan_only': True}),
+                        content_type='application/json', headers=AUTH)
+        assert '_lan_only.conf;' not in open(os.path.join(conf_d, 'a.a.1.com.conf')).read()
+        assert '_lan_only.conf;' in open(os.path.join(conf_d, 'b.b.1.com.conf')).read()

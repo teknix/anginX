@@ -105,10 +105,16 @@ Content-Type: application/json
   "domain": "email.1.com",   # FQDN the service is reachable at
   "port":   7805,             # port the upstream listens on
   "name":   "emailbox",       # label — used in conf filename and Docker DNS
-  "host":   "192.168.1.50"   # optional: upstream IP or hostname
+  "host":   "192.168.1.50",  # optional: upstream IP or hostname
                                # omit if upstream is a Docker container on the same network
+  "lan_only": true             # optional: only LAN/WireGuard clients (conf.base/_lan_only.conf)
 }
 ```
+
+**LAN-only domains (server-side).** A domain listed in `ANGINX_LAN_ONLY_DOMAINS` (comma/space list)
+or in `<CERTS_DIR>/lan-only-domains` (one per line, re-read on every registration, no restart) is
+always written LAN-only, whatever the client sends. Use this for internal services: a heartbeat
+that forgets `lan_only` cannot open them to the internet. Everyone else gets 403.
 
 **Responses**
 
