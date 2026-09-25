@@ -12,12 +12,27 @@ DOMAIN_RE = re.compile(r'^[a-z0-9]([a-z0-9.-]{0,61}[a-z0-9])?$')
 NAME_RE   = re.compile(r'^[a-z0-9][a-z0-9_-]{0,62}$')
 # host: IPv4, LAN hostname, or Docker container name — dots/colons allowed, no shell-unsafe chars
 HOST_RE   = re.compile(r'^[a-z0-9][a-z0-9._:-]{0,252}$')
+# path: must start with '/'; printable, no whitespace, no '..' traversal (checked separately)
+PATH_RE   = re.compile(r"^/[A-Za-z0-9._~!$&'()*+,;=:@/-]*$")
 PORT_RANGE = range(1, 65536)
+MAX_PATHS = 8  # per-domain cap on the `paths` array (path-routing registrations)
 
+# Single-location registration (the common case): one header line on the conf file.
+# `ws=` was added after `sse=`; its absence on older conf files is fine — the group is optional.
 HEADER_RE = re.compile(
     r'^#\s*anginx:\s*domain=(?P<domain>\S+)\s+port=(?P<port>\d+)'
     r'\s+name=(?P<name>\S+)(?:\s+host=(?P<host>\S+))?(?:\s+sse=(?P<sse>\d+))?'
-    r'\s+registered_at=(?P<registered_at>\S+)'
+    r'(?:\s+ws=(?P<ws>\d+))?\s+registered_at=(?P<registered_at>\S+)'
+)
+
+# Multi-location (path-routing) registration: one header line + one `anginx-path:` line per path.
+MULTI_HEADER_RE = re.compile(
+    r'^#\s*anginx:\s*domain=(?P<domain>\S+)\s+name=(?P<name>\S+)'
+    r'\s+paths=(?P<count>\d+)\s+registered_at=(?P<registered_at>\S+)'
+)
+PATH_LINE_RE = re.compile(
+    r'^#\s*anginx-path:\s*path=(?P<path>\S+)\s+host=(?P<host>\S+)'
+    r'\s+port=(?P<port>\d+)\s+ws=(?P<ws>\d+)\s+sse=(?P<sse>\d+)'
 )
 
 
@@ -59,6 +74,17 @@ def validate_port(port):
     return p
 
 
+def validate_path(path):
+    if not path:
+        raise ValidationError("path is required")
+    if not isinstance(path, str) or len(path) > 200:
+        raise ValidationError("invalid path — must be a string of at most 200 characters")
+    if '..' in path or any(c in path for c in ('\n', '\r', ' ', '\t')):
+        raise ValidationError("invalid path characters")
+    if not PATH_RE.match(path):
+        raise ValidationError("invalid path — must start with '/' and use URL path characters only")
+
+
 def check_nginx(conf):
     pid_file = conf.get('NGINX_PID', '/run/nginx.pid')
     if not os.path.exists(pid_file):
@@ -71,6 +97,55 @@ def check_nginx(conf):
     except Exception:
         return False
 
+
+
+def _parse_conf_lines(lines, filename):
+    """Parse one conf file's header (already-read lines) into a registry entry, or None."""
+    for i, line in enumerate(lines):
+        m = MULTI_HEADER_RE.match(line)
+        if m:
+            d = m.groupdict()
+            domain = d['domain'].lower()
+            count = int(d['count'])
+            paths = []
+            for path_line in lines[i + 1:i + 1 + count]:
+                pm = PATH_LINE_RE.match(path_line)
+                if not pm:
+                    break
+                pd = pm.groupdict()
+                paths.append({
+                    'path': pd['path'],
+                    'host': pd['host'],
+                    'port': int(pd['port']),
+                    'ws': pd['ws'] == '1',
+                    'sse': pd['sse'] == '1',
+                })
+            if len(paths) != count:
+                print(f"[anginx] warning: {filename} declared paths={count} but only "
+                      f"{len(paths)} parsed — skipping")
+                return None
+            return domain, {
+                'domain': domain,
+                'name': d['name'],
+                'paths': paths,
+                'conf_file': filename,
+                'registered_at': d['registered_at'],
+            }
+        m = HEADER_RE.match(line)
+        if m:
+            d = m.groupdict()
+            domain = d['domain'].lower()
+            return domain, {
+                'domain': domain,
+                'port': int(d['port']),
+                'name': d['name'],
+                'host': d['host'] or d['name'],  # host absent in old conf files
+                'sse': d['sse'] == '1',
+                'ws': d['ws'] == '1',
+                'conf_file': filename,
+                'registered_at': d['registered_at'],
+            }
+    return None
 
 
 def rebuild_registry(conf):
@@ -86,21 +161,11 @@ def rebuild_registry(conf):
         filepath = os.path.join(conf_d, filename)
         try:
             with open(filepath) as f:
-                for line in f:
-                    m = HEADER_RE.match(line)
-                    if m:
-                        d = m.groupdict()
-                        domain = d['domain'].lower()
-                        registry[domain] = {
-                            'domain': domain,
-                            'port': int(d['port']),
-                            'name': d['name'],
-                            'host': d['host'] or d['name'],  # host absent in old conf files
-                            'sse': d['sse'] == '1',
-                            'conf_file': filename,
-                            'registered_at': d['registered_at'],
-                        }
-                        break
+                lines = f.readlines()
+            parsed = _parse_conf_lines(lines, filename)
+            if parsed:
+                domain, entry = parsed
+                registry[domain] = entry
         except Exception as e:
             print(f"[anginx] warning: could not parse {filename}: {e}")
     return registry
@@ -140,6 +205,75 @@ def reap_stale(app):
             except Exception as e:
                 print(f"[anginx] reaper: nginx reload failed: {e}")
     return removed
+
+
+def _render_location(conf_base, path, host, port, ws, sse, lan):
+    """Render one `location <path> { ... }` block."""
+    upstream = f"http://{host}:{port}"
+    lan_directive = f"        include {conf_base}/_lan_only.conf;\n" if lan else ""
+    ws_directives = (
+        f"        proxy_http_version 1.1;\n"
+        f"        proxy_set_header Upgrade $http_upgrade;\n"
+        f"        proxy_set_header Connection $connection_upgrade;\n"
+    ) if ws else ""
+    # SSE needs unbuffered, keep-alive HTTP/1.1 with a long read timeout.
+    # (ws and sse are mutually exclusive — validated by the caller — so this never
+    # doubles up proxy_http_version / stomps ws's Connection header.)
+    sse_directives = (
+        f"        proxy_buffering off;\n"
+        f"        proxy_cache off;\n"
+        f"        proxy_http_version 1.1;\n"
+        f"        proxy_set_header Connection '';\n"
+        f"        proxy_read_timeout 3600s;\n"
+    ) if sse else ""
+    return (
+        f"    location {path} {{\n"
+        f"{lan_directive}"
+        f"        set $upstream {upstream};\n"
+        f"        proxy_pass $upstream;\n"
+        f"{ws_directives}"
+        f"{sse_directives}"
+        f"    }}\n"
+    )
+
+
+def _parse_paths_field(paths_data):
+    """Validate the `paths` array for a path-routing registration. Returns a normalized,
+    path-sorted list of dicts, or raises ValidationError."""
+    if not isinstance(paths_data, list) or not paths_data:
+        raise ValidationError("paths must be a non-empty array")
+    if len(paths_data) > MAX_PATHS:
+        raise ValidationError(f"too many paths — max {MAX_PATHS} per domain")
+
+    seen = set()
+    parsed = []
+    for entry in paths_data:
+        if not isinstance(entry, dict):
+            raise ValidationError("each path entry must be an object")
+        path = entry.get('path', '')
+        host = entry.get('host', '')
+        port = entry.get('port')
+        ws   = bool(entry.get('ws'))
+        sse  = bool(entry.get('sse'))
+
+        validate_path(path)
+        port_int = validate_port(port)
+        if host:
+            validate_host(host)
+        if ws and sse:
+            raise ValidationError(f"path {path}: ws and sse are mutually exclusive")
+        if path in seen:
+            raise ValidationError(f"duplicate path: {path}")
+        seen.add(path)
+        parsed.append({
+            'path': path,
+            'host': host.lower() if host else None,  # filled in with the domain's `name` by the caller
+            'port': port_int,
+            'ws': ws,
+            'sse': sse,
+        })
+    parsed.sort(key=lambda p: p['path'])
+    return parsed
 
 
 def _reaper_loop(app):
@@ -211,23 +345,35 @@ def create_app(config=None):
 
         domain = data.get('domain', '')
         name   = data.get('name', '')
-        port   = data.get('port')
-        host   = data.get('host', '')  # optional — upstream IP or hostname; defaults to name
-        sse    = bool(data.get('sse'))  # streaming endpoint — disable proxy buffering
         lan    = bool(data.get('lan_only'))  # client may ask; lan_only_domains() is checked below
+        multi  = 'paths' in data  # path-routing registration — see _parse_paths_field
 
         try:
             validate_domain(domain)
             validate_name(name)
-            port_int = validate_port(port)
-            if host:
-                validate_host(host)
+            if multi:
+                paths = _parse_paths_field(data.get('paths'))
+            else:
+                port = data.get('port')
+                host = data.get('host', '')  # optional — upstream IP or hostname; defaults to name
+                sse  = bool(data.get('sse'))  # streaming endpoint — disable proxy buffering
+                ws   = bool(data.get('ws'))   # WebSocket endpoint — upgrade headers
+                port_int = validate_port(port)
+                if host:
+                    validate_host(host)
+                if ws and sse:
+                    raise ValidationError("ws and sse are mutually exclusive")
         except ValidationError as e:
             return jsonify({'error': str(e)}), 400
 
         domain = domain.lower()
         name   = name.lower()
-        host   = host.lower() if host else name  # default upstream = container name
+        if multi:
+            for p in paths:
+                if p['host'] is None:
+                    p['host'] = name  # default upstream = container name, per path
+        else:
+            host = host.lower() if host else name  # default upstream = container name
 
         cert_dir  = os.path.join(app.config['CERTS_DIR'], 'live', domain)
         cert_file = os.path.join(cert_dir, 'fullchain.pem')
@@ -250,31 +396,36 @@ def create_app(config=None):
         registered_at = existing['registered_at'] if existing else \
             datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
-        upstream = f"http://{host}:{port_int}"
+        conf_base = app.config['CONF_BASE']
         lan = lan or domain in lan_only_domains()
-        lan_directive = f"        include {app.config['CONF_BASE']}/_lan_only.conf;\n" if lan else ""
-        # SSE needs unbuffered, keep-alive HTTP/1.1 with a long read timeout
-        sse_directives = (
-            f"        proxy_buffering off;\n"
-            f"        proxy_cache off;\n"
-            f"        proxy_http_version 1.1;\n"
-            f"        proxy_set_header Connection '';\n"
-            f"        proxy_read_timeout 3600s;\n"
-        ) if sse else ""
-        header = (
-            f"# anginx: domain={domain} port={port_int} name={name} host={host}"
-            f"{' sse=1' if sse else ''} registered_at={registered_at}\n"
-        )
-        proxy_location = (
-            f"    include {app.config['CONF_BASE']}/_proxy.conf;\n"
-            f"    resolver 127.0.0.11 valid=10s;\n"
-            f"    location / {{\n"
-            f"{lan_directive}"
-            f"        set $upstream {upstream};\n"
-            f"        proxy_pass $upstream;\n"
-            f"{sse_directives}"
-            f"    }}\n"
-        )
+
+        if multi:
+            header = (
+                f"# anginx: domain={domain} name={name} paths={len(paths)} "
+                f"registered_at={registered_at}\n"
+            )
+            for p in paths:
+                header += (
+                    f"# anginx-path: path={p['path']} host={p['host']} port={p['port']} "
+                    f"ws={'1' if p['ws'] else '0'} sse={'1' if p['sse'] else '0'}\n"
+                )
+            proxy_location = (
+                f"    include {conf_base}/_proxy.conf;\n"
+                f"    resolver 127.0.0.11 valid=10s;\n"
+            ) + "".join(
+                _render_location(conf_base, p['path'], p['host'], p['port'], p['ws'], p['sse'], lan)
+                for p in paths
+            )
+        else:
+            header = (
+                f"# anginx: domain={domain} port={port_int} name={name} host={host}"
+                f"{' sse=1' if sse else ''}{' ws=1' if ws else ''} registered_at={registered_at}\n"
+            )
+            proxy_location = (
+                f"    include {conf_base}/_proxy.conf;\n"
+                f"    resolver 127.0.0.11 valid=10s;\n"
+            ) + _render_location(conf_base, '/', host, port_int, ws, sse, lan)
+
         if has_cert:
             content = (
                 f"{header}"
@@ -360,15 +511,25 @@ def create_app(config=None):
                 rollback()  # keep conf.d in sync with the in-memory registry
                 return jsonify({'error': f"nginx reload failed: {e}"}), 500
 
-            registry[domain] = {
-                'domain': domain,
-                'port': port_int,
-                'name': name,
-                'host': host,
-                'sse': sse,
-                'conf_file': conf_filename,
-                'registered_at': registered_at,
-            }
+            if multi:
+                registry[domain] = {
+                    'domain': domain,
+                    'name': name,
+                    'paths': paths,
+                    'conf_file': conf_filename,
+                    'registered_at': registered_at,
+                }
+            else:
+                registry[domain] = {
+                    'domain': domain,
+                    'port': port_int,
+                    'name': name,
+                    'host': host,
+                    'sse': sse,
+                    'ws': ws,
+                    'conf_file': conf_filename,
+                    'registered_at': registered_at,
+                }
             last_seen[domain] = time.monotonic()
 
         return jsonify(registry[domain]), 200

@@ -37,7 +37,7 @@ def _request(method, url, key=None, body=None, retries=3):
     raise last_err
 
 
-def register(url, key, domain, port, name, host=None, sse=False, retries=3):
+def register(url, key, domain, port, name, host=None, sse=False, ws=False, lan_only=False, retries=3):
     """
     Register a service with anginX.
 
@@ -48,6 +48,9 @@ def register(url, key, domain, port, name, host=None, sse=False, retries=3):
     name   -- label used in conf filename; also Docker DNS name if host omitted
     host   -- upstream IP or hostname (omit for Docker containers on same network)
     sse    -- True for SSE / streaming endpoints (disables nginx proxy buffering)
+    ws     -- True for WebSocket endpoints (adds Upgrade/Connection headers).
+              Mutually exclusive with sse.
+    lan_only -- True to restrict this domain to LAN/WireGuard clients
 
     NOTE: this registers once. With anginX's TTL reaper enabled (ANGINX_TTL > 0,
     the default), call this on a loop faster than the TTL, or use the threaded
@@ -59,6 +62,33 @@ def register(url, key, domain, port, name, host=None, sse=False, retries=3):
         body['host'] = host
     if sse:
         body['sse'] = True
+    if ws:
+        body['ws'] = True
+    if lan_only:
+        body['lan_only'] = True
+    return _request('POST', endpoint, key=key, body=body, retries=retries)
+
+
+def register_paths(url, key, domain, name, paths, lan_only=False, retries=3):
+    """
+    Register a domain with multiple path-routed upstreams (path routing).
+
+    url    -- base URL of anginX, e.g. "http://anginx"
+    key    -- ANGINX_API_KEY
+    domain -- FQDN the service is reachable at, e.g. "app.1.com"
+    name   -- label used in conf filename; also default Docker DNS name for any
+              path entry that omits its own host
+    paths  -- list of dicts, each {"path": "/", "host"?: ..., "port": ..., "ws"?: bool, "sse"?: bool}
+              up to 8 entries; ws and sse are mutually exclusive per entry
+    lan_only -- True to restrict the whole domain to LAN/WireGuard clients
+
+    NOTE: same heartbeat requirement as register() — this is not an add-on to the flat
+    form, it's a different registration mode (send port/host OR paths, not both).
+    """
+    endpoint = f"{url.rstrip('/')}/new"
+    body = {'domain': domain, 'name': name, 'paths': paths}
+    if lan_only:
+        body['lan_only'] = True
     return _request('POST', endpoint, key=key, body=body, retries=retries)
 
 

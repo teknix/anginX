@@ -147,6 +147,36 @@ class TestRegister:
         assert 'sse=' not in conf
         assert client.get('/services?key=secret').get_json()[0]['sse'] is False
 
+    def test_ws_writes_directives_and_round_trips(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = client.post(
+                '/new',
+                data=json.dumps({'domain': 'app.1.com', 'port': 8080,
+                                 'name': 'myapp', 'ws': True}),
+                content_type='application/json', headers=AUTH,
+            )
+        assert r.status_code == 200
+
+        conf = open(os.path.join(conf_d, 'myapp.app.1.com.conf')).read()
+        assert 'proxy_set_header Upgrade $http_upgrade;' in conf
+        assert 'proxy_set_header Connection $connection_upgrade;' in conf
+        assert 'ws=1' in conf
+
+        assert client.get('/services?key=secret').get_json()[0]['ws'] is True
+
+    def test_ws_and_sse_together_rejected(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = client.post(
+                '/new',
+                data=json.dumps({'domain': 'app.1.com', 'port': 8080,
+                                 'name': 'myapp', 'ws': True, 'sse': True}),
+                content_type='application/json', headers=AUTH,
+            )
+        assert r.status_code == 400
+        assert 'mutually exclusive' in r.get_json()['error']
+
     def test_idempotent_overwrite(self, tmp_path):
         client, app, _ = make_app(tmp_path)
         with patch('subprocess.run'):
@@ -294,3 +324,108 @@ class TestReaper:
                         content_type='application/json', headers=AUTH)
         assert '_lan_only.conf;' not in open(os.path.join(conf_d, 'a.a.1.com.conf')).read()
         assert '_lan_only.conf;' in open(os.path.join(conf_d, 'b.b.1.com.conf')).read()
+
+
+def post_register_paths(client, domain='app.1.com', name='voicecom', paths=None, lan_only=None):
+    if paths is None:
+        paths = [{'path': '/', 'host': 'flask', 'port': 5010},
+                 {'path': '/rtc', 'host': 'livekit', 'port': 7880, 'ws': True}]
+    body = {'domain': domain, 'name': name, 'paths': paths}
+    if lan_only is not None:
+        body['lan_only'] = lan_only
+    return client.post('/new', data=json.dumps(body), content_type='application/json', headers=AUTH)
+
+
+class TestPathRouting:
+    def test_registers_multiple_locations(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = post_register_paths(client)
+        assert r.status_code == 200
+        conf = open(os.path.join(conf_d, 'voicecom.app.1.com.conf')).read()
+        assert 'location / {' in conf
+        assert 'location /rtc {' in conf
+        assert 'http://flask:5010' in conf
+        assert 'http://livekit:7880' in conf
+        assert 'proxy_set_header Upgrade $http_upgrade;' in conf  # /rtc's ws flag
+
+    def test_round_trips_through_registry(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run'):
+            post_register_paths(client)
+        services = client.get('/services?key=secret').get_json()
+        assert len(services) == 1
+        assert services[0]['name'] == 'voicecom'
+        paths = {p['path']: p for p in services[0]['paths']}
+        assert paths['/']['port'] == 5010
+        assert paths['/rtc']['ws'] is True
+
+    def test_defaults_missing_path_host_to_name(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = post_register_paths(client, name='voicecom',
+                                     paths=[{'path': '/', 'port': 5010}])
+        assert r.status_code == 200
+        conf = open(os.path.join(conf_d, 'voicecom.app.1.com.conf')).read()
+        assert 'http://voicecom:5010' in conf
+
+    def test_rejects_duplicate_paths(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = post_register_paths(client, paths=[{'path': '/', 'host': 'a', 'port': 1},
+                                                    {'path': '/', 'host': 'b', 'port': 2}])
+        assert r.status_code == 400
+        assert 'duplicate' in r.get_json()['error']
+
+    def test_rejects_empty_paths_array(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = post_register_paths(client, paths=[])
+        assert r.status_code == 400
+
+    def test_rejects_too_many_paths(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        too_many = [{'path': f'/p{i}', 'host': 'a', 'port': 1000 + i} for i in range(9)]
+        with patch('subprocess.run'):
+            r = post_register_paths(client, paths=too_many)
+        assert r.status_code == 400
+        assert 'too many' in r.get_json()['error'].lower()
+
+    def test_rejects_ws_and_sse_on_same_path(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = post_register_paths(client, paths=[{'path': '/', 'host': 'a', 'port': 1,
+                                                      'ws': True, 'sse': True}])
+        assert r.status_code == 400
+        assert 'mutually exclusive' in r.get_json()['error']
+
+    def test_rejects_bad_path(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = post_register_paths(client, paths=[{'path': 'no-leading-slash', 'host': 'a', 'port': 1}])
+        assert r.status_code == 400
+
+    def test_lan_only_applies_to_whole_domain(self, tmp_path):
+        client, app, conf_d = make_app(tmp_path)
+        with patch('subprocess.run'):
+            r = post_register_paths(client, lan_only=True)
+        assert r.status_code == 200
+        conf = open(os.path.join(conf_d, 'voicecom.app.1.com.conf')).read()
+        assert conf.count('_lan_only.conf;') == 2  # once per location
+
+    def test_heartbeat_skips_reload(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run') as run:
+            post_register_paths(client)
+            calls_after_first = run.call_count
+            post_register_paths(client)  # identical re-register = heartbeat
+        assert run.call_count == calls_after_first
+
+    def test_max_services_cap_counts_domains_not_paths(self, tmp_path):
+        client, app, _ = make_app(tmp_path)
+        with patch('subprocess.run'):
+            post_register_paths(client, domain='a.1.com', name='a')
+            post_register_paths(client, domain='b.1.com', name='b')
+            post_register_paths(client, domain='c.1.com', name='c')
+            r = post_register_paths(client, domain='d.1.com', name='d')
+        assert r.status_code == 429

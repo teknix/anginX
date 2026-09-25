@@ -55,6 +55,54 @@ def test_handles_missing_conf_d(tmp_path):
     assert reg == {}
 
 
+def test_parses_ws_field(tmp_path):
+    conf_d = str(tmp_path / 'conf.d')
+    write_conf(conf_d, 'myapp.app.1.com.conf',
+               '# anginx: domain=app.1.com port=8080 name=myapp host=myapp ws=1 '
+               'registered_at=2026-05-22T00:00:00Z\n'
+               'server { ... }\n')
+    reg = rebuild_registry({'CONF_D': conf_d})
+    assert reg['app.1.com']['ws'] is True
+
+
+def test_old_header_without_ws_defaults_false(tmp_path):
+    # Pre-existing conf files on disk never have a ws= field.
+    conf_d = str(tmp_path / 'conf.d')
+    write_conf(conf_d, 'myapp.app.1.com.conf',
+               '# anginx: domain=app.1.com port=8080 name=myapp registered_at=2026-05-22T00:00:00Z\n'
+               'server { ... }\n')
+    reg = rebuild_registry({'CONF_D': conf_d})
+    assert reg['app.1.com']['ws'] is False
+
+
+def test_parses_multi_path_header(tmp_path):
+    conf_d = str(tmp_path / 'conf.d')
+    write_conf(conf_d, 'voicecom.app.1.com.conf',
+               '# anginx: domain=app.1.com name=voicecom paths=2 registered_at=2026-05-22T00:00:00Z\n'
+               '# anginx-path: path=/ host=flask port=5010 ws=0 sse=0\n'
+               '# anginx-path: path=/rtc host=livekit port=7880 ws=1 sse=0\n'
+               'server { ... }\n')
+    reg = rebuild_registry({'CONF_D': conf_d})
+    assert 'app.1.com' in reg
+    entry = reg['app.1.com']
+    assert entry['name'] == 'voicecom'
+    assert len(entry['paths']) == 2
+    assert entry['paths'][0] == {'path': '/', 'host': 'flask', 'port': 5010, 'ws': False, 'sse': False}
+    assert entry['paths'][1] == {'path': '/rtc', 'host': 'livekit', 'port': 7880, 'ws': True, 'sse': False}
+
+
+def test_multi_path_header_with_truncated_path_lines_is_skipped(tmp_path):
+    # declared paths=2 but only one anginx-path line present — malformed, must not
+    # half-register the domain
+    conf_d = str(tmp_path / 'conf.d')
+    write_conf(conf_d, 'voicecom.app.1.com.conf',
+               '# anginx: domain=app.1.com name=voicecom paths=2 registered_at=2026-05-22T00:00:00Z\n'
+               '# anginx-path: path=/ host=flask port=5010 ws=0 sse=0\n'
+               'server { ... }\n')
+    reg = rebuild_registry({'CONF_D': conf_d})
+    assert 'app.1.com' not in reg
+
+
 def test_multiple_services(tmp_path):
     conf_d = str(tmp_path / 'conf.d')
     write_conf(conf_d, 'a.app1.com.conf',

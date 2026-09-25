@@ -107,21 +107,42 @@ Content-Type: application/json
   "name":   "emailbox",       # label — used in conf filename and Docker DNS
   "host":   "192.168.1.50",  # optional: upstream IP or hostname
                                # omit if upstream is a Docker container on the same network
-  "lan_only": true             # optional: only LAN/WireGuard clients (conf.base/_lan_only.conf)
+  "lan_only": true,            # optional: only LAN/WireGuard clients (conf.base/_lan_only.conf)
+  "sse":    false,             # optional: streaming endpoint — disables proxy buffering
+  "ws":     false               # optional: WebSocket endpoint — adds Upgrade/Connection headers
 }
 ```
+`sse` and `ws` are mutually exclusive (400 if both are true).
 
 **LAN-only domains (server-side).** A domain listed in `ANGINX_LAN_ONLY_DOMAINS` (comma/space list)
 or in `<CERTS_DIR>/lan-only-domains` (one per line, re-read on every registration, no restart) is
 always written LAN-only, whatever the client sends. Use this for internal services: a heartbeat
 that forgets `lan_only` cannot open them to the internet. Everyone else gets 403.
 
+**Path routing.** Send `paths` instead of `port`/`host`/`sse`/`ws` to route multiple paths on one
+domain to different upstreams — the case `port`/`host` alone can't express (e.g. `/` to a Flask app,
+`/rtc` to a media server):
+```
+{
+  "domain": "voicecom.example.com",
+  "name":   "voicecom",
+  "paths": [
+    {"path": "/",    "host": "voicecom-flask", "port": 5010},
+    {"path": "/rtc", "host": "livekit",        "port": 7880, "ws": true}
+  ]
+}
+```
+Each path entry takes its own `host` (optional, defaults to `name`), required `port`, and optional
+`ws`/`sse` (mutually exclusive, per path). Up to 8 paths per domain; `lan_only` still applies to the
+whole domain, not per path. This is a different registration mode, not an add-on to the flat form —
+send either `port`/`host` or `paths`, not both.
+
 **Responses**
 
 | Code | Meaning |
 |------|---------|
 | 200 | Registered. Returns service object. |
-| 400 | Validation error (bad domain, port, name). Fix the payload. |
+| 400 | Validation error (bad domain, port, name, path, or conflicting `ws`+`sse`). Fix the payload. |
 | 401 | Wrong API key. |
 | 429 | Max services cap reached. |
 | 503 | Cert not yet acquired for this domain. Retry after a few seconds. (Suppressed when `ANGINX_ALLOW_HTTP=1` — the service is served over HTTP instead and auto-upgrades to HTTPS once a cert appears.) |

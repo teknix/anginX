@@ -35,7 +35,13 @@
     <tr>
       <td><a href="https://{{ s.domain }}" target="_blank" rel="noopener">{{ s.domain }}</a></td>
       <td>{{ s.name }}</td>
-      <td>{{ s.port }}</td>
+      <td>
+        {% if s.paths %}
+          {% for p in s.paths %}{{ p.path }}&rarr;{{ p.host }}:{{ p.port }}{% if not loop.last %}, {% endif %}{% endfor %}
+        {% else %}
+          {{ s.port }}
+        {% endif %}
+      </td>
       <td>{{ s.registered_at }}</td>
     </tr>
     {% endfor %}

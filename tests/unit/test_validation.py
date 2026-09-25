@@ -1,5 +1,5 @@
 import pytest
-from app import validate_domain, validate_name, validate_port, ValidationError
+from app import validate_domain, validate_name, validate_port, validate_path, ValidationError
 
 
 class TestValidateDomain:
@@ -108,3 +108,42 @@ class TestValidatePort:
 
     def test_accepts_string_int(self):
         assert validate_port('8080') == 8080
+
+
+class TestValidatePath:
+    def test_valid_root(self):
+        validate_path('/')
+
+    def test_valid_subpath(self):
+        validate_path('/rtc')
+
+    def test_valid_nested(self):
+        validate_path('/api/v1/rtc')
+
+    def test_rejects_empty(self):
+        with pytest.raises(ValidationError, match='required'):
+            validate_path('')
+
+    def test_rejects_none(self):
+        with pytest.raises(ValidationError):
+            validate_path(None)
+
+    def test_rejects_missing_leading_slash(self):
+        with pytest.raises(ValidationError):
+            validate_path('rtc')
+
+    def test_rejects_traversal(self):
+        with pytest.raises(ValidationError):
+            validate_path('/../etc/passwd')
+
+    def test_rejects_space(self):
+        with pytest.raises(ValidationError):
+            validate_path('/foo bar')
+
+    def test_rejects_newline_injection(self):
+        with pytest.raises(ValidationError):
+            validate_path('/rtc\nlocation /evil { proxy_pass http://x; }')
+
+    def test_rejects_too_long(self):
+        with pytest.raises(ValidationError):
+            validate_path('/' + 'a' * 300)
